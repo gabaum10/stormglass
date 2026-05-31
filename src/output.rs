@@ -62,7 +62,7 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
     }
 
     println!("\nBurn");
-    println!("  Avg per turn:   {} input tokens", commafy(s.avg_burn_rate.max(0.0) as u64));
+    println!("  Avg per turn:   {} context tokens", commafy(s.avg_burn_rate.round().abs() as u64));
 
     // Peak turn tools: find the turn in the slice, format as "Name xN"
     let peak_tools_str = turns.iter()
@@ -85,8 +85,8 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
         })
         .unwrap_or_default();
     println!(
-        "  Peak:           turn {} — {} tokens{}",
-        s.peak_burn_turn, commafy(s.peak_burn_value.max(0) as u64), peak_tools_str
+        "  Peak:           turn {} — {} context tokens{}",
+        s.peak_burn_turn, s.peak_burn_value, peak_tools_str
     );
     println!("  Final context:  {} tokens", commafy(s.final_context_size));
 
@@ -113,7 +113,7 @@ pub fn print_json(s: &SessionSummary) {
 }
 
 pub fn write_csv_header(w: &mut impl Write) -> io::Result<()> {
-    writeln!(w, "turn,timestamp,model,input_tokens,output_tokens,cache_read,cache_write,has_thinking,thinking_block_count,content_blocks,tool_count,tools_called,stop_reason,cumulative_input,burn_delta,skill,elapsed_sec,tokens_per_sec")
+    writeln!(w, "turn,timestamp,model,input_tokens,output_tokens,cache_read,cache_write,context_tokens,has_thinking,thinking_block_count,content_blocks,tool_count,tools_called,stop_reason,cumulative_context,burn_delta,skill,elapsed_sec,tokens_per_sec")
 }
 
 pub fn write_csv_row(t: &Turn, w: &mut impl Write) -> io::Result<()> {
@@ -127,7 +127,7 @@ pub fn write_csv_row(t: &Turn, w: &mut impl Write) -> io::Result<()> {
     };
     writeln!(
         w,
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.6},{:.6}",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.6},{:.6}",
         t.turn,
         q(&t.timestamp),
         q(&t.model),
@@ -135,13 +135,14 @@ pub fn write_csv_row(t: &Turn, w: &mut impl Write) -> io::Result<()> {
         t.output_tokens,
         t.cache_read_tokens,
         t.cache_write_tokens,
+        t.context_tokens,
         t.has_thinking,
         t.thinking_block_count,
         t.content_blocks,
         t.tool_count,
         q(&t.tools_called.join(";")),
         q(&t.stop_reason),
-        t.cumulative_input,
+        t.cumulative_context,
         t.burn_delta,
         q(&t.skill),
         t.elapsed_sec,

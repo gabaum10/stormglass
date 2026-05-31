@@ -273,9 +273,9 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
 
     // Per-turn streaming state
     let mut current_group: Option<TurnAccumulator> = None;
-    let mut prev_input_tokens: Option<u64> = None;
+    let mut prev_context_tokens: Option<u64> = None;
     let mut prev_timestamp_ms: Option<i64> = None;
-    let mut cum_input: u64 = 0;
+    let mut cum_context: u64 = 0;
     let mut turn_num: u32 = 0;
 
     // Last-seen timestamp for subagent records (queue-operation entries)
@@ -361,9 +361,9 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
                         let turn = flush_and_record(
                             acc,
                             &mut turn_num,
-                            &mut prev_input_tokens,
+                            &mut prev_context_tokens,
                             &mut prev_timestamp_ms,
-                            &mut cum_input,
+                            &mut cum_context,
                             &mut summary_acc,
                         );
                         if let Some(ref mut w) = csv_writer {
@@ -418,9 +418,9 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
         let turn = flush_and_record(
             acc,
             &mut turn_num,
-            &mut prev_input_tokens,
+            &mut prev_context_tokens,
             &mut prev_timestamp_ms,
-            &mut cum_input,
+            &mut cum_context,
             &mut summary_acc,
         );
         if let Some(ref mut w) = csv_writer {
@@ -449,9 +449,9 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
 fn flush_and_record(
     acc: TurnAccumulator,
     turn_num: &mut u32,
-    prev_input_tokens: &mut Option<u64>,
+    prev_context_tokens: &mut Option<u64>,
     prev_timestamp_ms: &mut Option<i64>,
-    cum_input: &mut u64,
+    cum_context: &mut u64,
     summary_acc: &mut SummaryAccumulator,
 ) -> Turn {
     *turn_num += 1;
@@ -460,7 +460,7 @@ fn flush_and_record(
     let prev_ts_ms = *prev_timestamp_ms;
     let this_ts_ms = parse_ts_ms(&acc.timestamp);
 
-    let turn = flush_turn(acc, n, *prev_input_tokens, prev_ts_ms, cum_input);
+    let turn = flush_turn(acc, n, *prev_context_tokens, prev_ts_ms, cum_context);
 
     // Update summary accumulator (saturating to avoid overflow on malformed large values)
     summary_acc.total_input = summary_acc.total_input.saturating_add(turn.input_tokens);
@@ -468,7 +468,7 @@ fn flush_and_record(
     summary_acc.total_cache_read = summary_acc.total_cache_read.saturating_add(turn.cache_read_tokens);
     summary_acc.total_cache_write = summary_acc.total_cache_write.saturating_add(turn.cache_write_tokens);
     summary_acc.total_turns += 1;
-    summary_acc.final_context_size = turn.input_tokens;
+    summary_acc.final_context_size = turn.context_tokens;
 
     if turn.has_thinking {
         summary_acc.turns_with_thinking += 1;
@@ -495,7 +495,7 @@ fn flush_and_record(
     }
 
     // Advance prev state for next flush
-    *prev_input_tokens = Some(turn.input_tokens);
+    *prev_context_tokens = Some(turn.context_tokens);
     *prev_timestamp_ms = this_ts_ms;
 
     turn

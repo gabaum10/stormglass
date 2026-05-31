@@ -83,13 +83,13 @@ fn print_comparison_table(paths: &[String], summaries: &[SessionSummary]) {
         },
         Row {
             label: "Avg burn/turn",
-            values: summaries.iter().map(|s| commafy(s.avg_burn_rate.max(0.0) as u64)).collect(),
+            values: summaries.iter().map(|s| format!("{}", s.avg_burn_rate.round() as i64)).collect(),
         },
         Row {
             label: "Peak burn",
             values: summaries
                 .iter()
-                .map(|s| format!("{} (t{})", commafy(s.peak_burn_value.max(0) as u64), s.peak_burn_turn))
+                .map(|s| format!("{} (t{})", s.peak_burn_value, s.peak_burn_turn))
                 .collect(),
         },
         Row {

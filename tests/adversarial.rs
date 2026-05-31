@@ -109,8 +109,8 @@ fn f3_token_sum_overflow_saturates() {
 }
 
 // W2: tool name containing a comma must be quoted in the CSV tools_called cell
-// so the row stays 18 comma-separated fields. Without the q() escaper the join
-// result is written raw, splitting the row on the embedded comma → 19+ fields.
+// so the row stays 19 comma-separated fields. Without the q() escaper the join
+// result is written raw, splitting the row on the embedded comma → 20+ fields.
 #[test]
 fn w2_csv_comma_in_tool_name_stays_18_fields() {
     // A tool_use entry whose name contains a comma
@@ -134,7 +134,7 @@ fn w2_csv_comma_in_tool_name_stays_18_fields() {
     let csv = std::fs::read_to_string(&csv_path).expect("CSV file should exist");
     let _ = std::fs::remove_file(&csv_path);
 
-    // Skip header row; the data row must have exactly 18 comma-separated fields
+    // Skip header row; the data row must have exactly 19 comma-separated fields
     let data_row = csv.lines()
         .nth(1)
         .expect("CSV must have a data row after the header");
@@ -142,8 +142,8 @@ fn w2_csv_comma_in_tool_name_stays_18_fields() {
     // Count top-level comma separators (outside quoted cells) by a simple CSV field parser
     let field_count = count_csv_fields(data_row);
     assert_eq!(
-        field_count, 18,
-        "W2: CSV row with comma-in-tool-name must have exactly 18 fields, got {}. Row: {}",
+        field_count, 19,
+        "W2: CSV row with comma-in-tool-name must have exactly 19 fields, got {}. Row: {}",
         field_count, data_row
     );
 

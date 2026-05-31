@@ -17,14 +17,17 @@ pub struct Turn {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    /// Real context size: input_tokens + cache_read_tokens + cache_write_tokens.
+    /// This is the total tokens in the context window, not just the uncached fraction.
+    pub context_tokens: u64,
     pub has_thinking: bool,
     pub thinking_block_count: u32,
     pub content_blocks: u32,
     pub tools_called: Vec<String>,
     pub tool_count: u32,
     pub stop_reason: String,
-    pub cumulative_input: u64,
-    pub burn_delta: i64,      // signed; 0 for turn 1
+    pub cumulative_context: u64,
+    pub burn_delta: i64,      // signed; 0 for turn 1; based on context_tokens
     pub skill: String,
     pub elapsed_sec: f64,     // 0.0 for turn 1
     pub tokens_per_sec: f64,  // 0.0 if elapsed == 0.0
@@ -46,13 +49,13 @@ pub struct SummaryAccumulator {
     pub total_cache_write: u64,
     pub turns_with_thinking: u32,
     pub total_turns: u32,
-    pub burn_sum_excl_first: i64,   // sum of burn_delta for turns 2..N
+    pub burn_sum_excl_first: i64,   // sum of burn_delta for turns 2..N (context-based)
     pub peak_burn_value: i64,
     pub peak_burn_turn: u32,
     pub peak_burn_tools: Vec<String>, // tools of the peak-burn turn (not serialized)
     pub tool_counts: HashMap<String, u32>,
     pub models_seen: HashMap<String, u32>,
-    pub final_context_size: u64,    // last turn's input_tokens
+    pub final_context_size: u64,    // last turn's context_tokens
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -97,9 +100,9 @@ pub fn parse_ts_ms(ts: &str) -> Option<i64> {
 pub fn flush_turn(
     acc: crate::parse::TurnAccumulator,
     turn_num: u32,
-    prev_input_tokens: Option<u64>,
+    prev_context_tokens: Option<u64>,
     prev_timestamp_ms: Option<i64>,
-    cum_input: &mut u64,
+    cum_context: &mut u64,
 ) -> Turn {
     let usage = acc.usage.unwrap_or_else(|| {
         eprintln!("warn: turn {} missing usage data, defaulting to 0", turn_num);
@@ -111,12 +114,22 @@ pub fn flush_turn(
     let cache_read_tokens = usage.cache_read_input_tokens;
     let cache_write_tokens = usage.cache_creation_input_tokens;
 
-    *cum_input = cum_input.saturating_add(input_tokens);
-    let cumulative_input = *cum_input;
+    // Real context size: uncached input + everything served from cache
+    let context_tokens = input_tokens
+        .saturating_add(cache_read_tokens)
+        .saturating_add(cache_write_tokens);
 
-    let burn_delta = match prev_input_tokens {
+    *cum_context = cum_context.saturating_add(context_tokens);
+    let cumulative_context = *cum_context;
+
+    // burn_delta: how much the context window grew (or shrank) since the previous turn.
+    // Use i128 intermediate to avoid silent wraparound on large values.
+    let burn_delta = match prev_context_tokens {
         None => 0i64, // turn 1
-        Some(prev) => input_tokens as i64 - prev as i64,
+        Some(prev) => {
+            let delta = context_tokens as i128 - prev as i128;
+            delta.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+        }
     };
 
     let elapsed_sec = match prev_timestamp_ms {
@@ -145,13 +158,14 @@ pub fn flush_turn(
         output_tokens,
         cache_read_tokens,
         cache_write_tokens,
+        context_tokens,
         has_thinking,
         thinking_block_count: acc.thinking_count,
         content_blocks,
         tools_called: acc.tool_names,
         tool_count,
         stop_reason: acc.stop_reason.unwrap_or_default(),
-        cumulative_input,
+        cumulative_context,
         burn_delta,
         skill: acc.skill.unwrap_or_default(),
         elapsed_sec,
