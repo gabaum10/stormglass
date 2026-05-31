@@ -107,3 +107,71 @@ fn f3_token_sum_overflow_saturates() {
         "F3: saturating_add must clamp total_input_tokens at u64::MAX"
     );
 }
+
+// W2: tool name containing a comma must be quoted in the CSV tools_called cell
+// so the row stays 18 comma-separated fields. Without the q() escaper the join
+// result is written raw, splitting the row on the embedded comma → 19+ fields.
+#[test]
+fn w2_csv_comma_in_tool_name_stays_18_fields() {
+    // A tool_use entry whose name contains a comma
+    let line = r#"{"type":"assistant","message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"tool_use","name":"Foo,Bar"}]},"timestamp":"2026-05-29T10:00:00.000Z","sessionId":"sess1234"}"#;
+    let jsonl_path = write_tmp("w2.jsonl", &format!("{}\n", line));
+    let csv_path = {
+        let mut p = std::env::temp_dir();
+        p.push(format!("sg_adv_{}_w2.csv", std::process::id()));
+        p
+    };
+    let out = Command::new(bin())
+        .args(["analyze", jsonl_path.to_str().unwrap(),
+               "--csv", csv_path.to_str().unwrap(), "--quiet"])
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&jsonl_path);
+
+    assert!(out.status.success(), "W2: analyze must succeed. stderr: {}",
+            String::from_utf8_lossy(&out.stderr));
+
+    let csv = std::fs::read_to_string(&csv_path).expect("CSV file should exist");
+    let _ = std::fs::remove_file(&csv_path);
+
+    // Skip header row; the data row must have exactly 18 comma-separated fields
+    let data_row = csv.lines()
+        .nth(1)
+        .expect("CSV must have a data row after the header");
+
+    // Count top-level comma separators (outside quoted cells) by a simple CSV field parser
+    let field_count = count_csv_fields(data_row);
+    assert_eq!(
+        field_count, 18,
+        "W2: CSV row with comma-in-tool-name must have exactly 18 fields, got {}. Row: {}",
+        field_count, data_row
+    );
+
+    // Also verify the tools_called cell contains the quoted tool name
+    assert!(
+        data_row.contains("\"Foo,Bar\""),
+        "W2: tools_called cell must be quoted when tool name contains a comma. Row: {}",
+        data_row
+    );
+}
+
+/// Count fields in one CSV row, respecting double-quoted cells.
+fn count_csv_fields(row: &str) -> usize {
+    let mut fields = 1usize;
+    let mut in_quotes = false;
+    let mut chars = row.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                if in_quotes && chars.peek() == Some(&'"') {
+                    chars.next(); // escaped quote — skip
+                } else {
+                    in_quotes = !in_quotes;
+                }
+            }
+            ',' if !in_quotes => fields += 1,
+            _ => {}
+        }
+    }
+    fields
+}

@@ -139,7 +139,7 @@ pub fn write_csv_row(t: &Turn, w: &mut impl Write) -> io::Result<()> {
         t.thinking_block_count,
         t.content_blocks,
         t.tool_count,
-        t.tools_called.join(";"),
+        q(&t.tools_called.join(";")),
         q(&t.stop_reason),
         t.cumulative_input,
         t.burn_delta,
