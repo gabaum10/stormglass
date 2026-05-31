@@ -1,0 +1,11 @@
+[package]
+name = "stormglass"
+version = "0.1.0"
+edition = "2021"
+description = "Claude Code session JSONL analyzer — per-turn token telemetry, thinking-block analysis, context burn curves"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
