@@ -54,14 +54,23 @@ pub struct ParseResult {
 // ── dispatch_line: the ONLY place that touches serde_json::Value ─────────────
 
 /// Classify a single JSONL line into an Entry variant.
-/// Check order: JSON parse -> isSidechain skip -> type -> match type.
-/// All serde_json::Value navigation is concentrated here.
+/// Parses the JSON, then delegates to `dispatch_value`.
+/// Returns Skip on JSON parse failure (silently — callers that want a diagnostic
+/// should call `serde_json::from_str` themselves and call `dispatch_value` directly).
+/// Kept as a public, unit-testable entry point; the hot parse loop calls dispatch_value.
+#[allow(dead_code)]
 pub fn dispatch_line(line: &str) -> Entry {
     let v: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => return Entry::Skip,
     };
+    dispatch_value(&v)
+}
 
+/// Classify an already-parsed JSON value into an Entry variant.
+/// Check order: isSidechain skip -> type -> match type.
+/// All serde_json::Value navigation is concentrated here.
+pub fn dispatch_value(v: &serde_json::Value) -> Entry {
     // Skip sidechains before checking type
     if v.get("isSidechain").and_then(|x| x.as_bool()).unwrap_or(false) {
         return Entry::Skip;
@@ -73,9 +82,9 @@ pub fn dispatch_line(line: &str) -> Entry {
     };
 
     match entry_type {
-        "assistant" => dispatch_assistant(&v),
-        "user" => dispatch_user(&v),
-        "queue-operation" => dispatch_queue_operation(&v),
+        "assistant" => dispatch_assistant(v),
+        "user" => dispatch_user(v),
+        "queue-operation" => dispatch_queue_operation(v),
         _ => Entry::Skip,
     }
 }
@@ -288,10 +297,11 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
             continue;
         }
 
-        // Parse JSON once for timestamp tracking and entry dispatch.
-        // Emit a diagnostic on parse failure (F4: spec requires "Line N: parse error: ...")
-        // and skip dispatch for that line. Intentional skips (sidechain / meta / unknown
-        // type) are SILENT — only actual JSON parse errors get the diagnostic.
+        // Parse JSON exactly once per line. Emit a diagnostic and skip on failure
+        // (F4: spec requires "Line N: parse error: ..."). Intentional skips (sidechain /
+        // meta / unknown type) are SILENT — only JSON parse errors get the diagnostic.
+        // The parsed Value is reused for timestamp tracking AND entry dispatch so
+        // the string is not parsed a second time.
         let raw_val = match serde_json::from_str::<serde_json::Value>(line) {
             Ok(v) => v,
             Err(e) => {
@@ -312,7 +322,7 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
             }
         }
 
-        match dispatch_line(line) {
+        match dispatch_value(&raw_val) {
             Entry::Skip => {}
 
             Entry::UserHuman => {
