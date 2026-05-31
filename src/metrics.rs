@@ -111,7 +111,7 @@ pub fn flush_turn(
     let cache_read_tokens = usage.cache_read_input_tokens;
     let cache_write_tokens = usage.cache_creation_input_tokens;
 
-    *cum_input += input_tokens;
+    *cum_input = cum_input.saturating_add(input_tokens);
     let cumulative_input = *cum_input;
 
     let burn_delta = match prev_input_tokens {
@@ -122,7 +122,7 @@ pub fn flush_turn(
     let elapsed_sec = match prev_timestamp_ms {
         None => 0.0f64, // turn 1
         Some(prev_ms) => match parse_ts_ms(&acc.timestamp) {
-            Some(this_ms) => (this_ms - prev_ms) as f64 / 1000.0,
+            Some(this_ms) => ((this_ms - prev_ms) as f64 / 1000.0).max(0.0),
             None => 0.0,
         },
     };

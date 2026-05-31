@@ -66,13 +66,7 @@ fn main() {
 
             // --json: print JSON summary to stdout
             if json {
-                match serde_json::to_string_pretty(&result.summary) {
-                    Ok(s) => println!("{}", s),
-                    Err(e) => {
-                        eprintln!("JSON serialization error: {}", e);
-                        process::exit(1);
-                    }
-                }
+                output::print_json(&result.summary);
             }
 
             // Human output: unless --quiet or --json (--json is exclusive of human)

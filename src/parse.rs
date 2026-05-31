@@ -229,6 +229,17 @@ fn extract_u64(content: &str, tag: &str) -> Option<u64> {
 
 /// Parse a session JSONL file, optionally streaming CSV rows.
 pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResult> {
+    // Reject non-regular-file paths up front (e.g. directories) — File::open
+    // succeeds on a directory but BufReader::lines() errors on every poll,
+    // causing an infinite loop without this guard.
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{}: not a regular file", path),
+        ));
+    }
+
     let file = std::fs::File::open(path)?;
     let reader = io::BufReader::new(file);
 
@@ -266,8 +277,10 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
         let line = match line_result {
             Ok(l) => l,
             Err(e) => {
+                // I/O error on read — break, do not continue looping (would spin forever
+                // on persistent errors like reading from a directory fd).
                 eprintln!("Line {}: read error: {}", line_idx + 1, e);
-                continue;
+                break;
             }
         };
         let line = line.trim();
@@ -275,17 +288,27 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
             continue;
         }
 
+        // Parse JSON once for timestamp tracking and entry dispatch.
+        // Emit a diagnostic on parse failure (F4: spec requires "Line N: parse error: ...")
+        // and skip dispatch for that line. Intentional skips (sidechain / meta / unknown
+        // type) are SILENT — only actual JSON parse errors get the diagnostic.
+        let raw_val = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Line {}: parse error: {}", line_idx + 1, e);
+                continue;
+            }
+        };
+
         // Track last-seen timestamp for queue-operation subagent records and
-        // session time boundaries — parse briefly from raw line
-        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(ts) = raw.get("timestamp").and_then(|x| x.as_str()) {
-                if !ts.is_empty() {
-                    last_queue_timestamp = ts.to_owned();
-                    if start_time.is_empty() {
-                        start_time = ts.to_owned();
-                    }
-                    end_time = ts.to_owned();
+        // session time boundaries.
+        if let Some(ts) = raw_val.get("timestamp").and_then(|x| x.as_str()) {
+            if !ts.is_empty() {
+                last_queue_timestamp = ts.to_owned();
+                if start_time.is_empty() {
+                    start_time = ts.to_owned();
                 }
+                end_time = ts.to_owned();
             }
         }
 
@@ -429,11 +452,11 @@ fn flush_and_record(
 
     let turn = flush_turn(acc, n, *prev_input_tokens, prev_ts_ms, cum_input);
 
-    // Update summary accumulator
-    summary_acc.total_input += turn.input_tokens;
-    summary_acc.total_output += turn.output_tokens;
-    summary_acc.total_cache_read += turn.cache_read_tokens;
-    summary_acc.total_cache_write += turn.cache_write_tokens;
+    // Update summary accumulator (saturating to avoid overflow on malformed large values)
+    summary_acc.total_input = summary_acc.total_input.saturating_add(turn.input_tokens);
+    summary_acc.total_output = summary_acc.total_output.saturating_add(turn.output_tokens);
+    summary_acc.total_cache_read = summary_acc.total_cache_read.saturating_add(turn.cache_read_tokens);
+    summary_acc.total_cache_write = summary_acc.total_cache_write.saturating_add(turn.cache_write_tokens);
     summary_acc.total_turns += 1;
     summary_acc.final_context_size = turn.input_tokens;
 

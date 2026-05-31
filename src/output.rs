@@ -29,9 +29,10 @@ pub fn format_duration(secs: f64) -> String {
 }
 
 pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
-    // Header: session id (first 8 chars), model, optional mixed-session note
-    let sid = if s.session_id.len() > 8 { &s.session_id[..8] } else { &s.session_id };
-    println!("stormglass / Session: {} ({})", sid, s.model);
+    // Header: session id (first 8 Unicode chars), model, optional mixed-session note.
+    // Use chars().take(8) — byte slicing panics on multibyte characters.
+    let sid: String = s.session_id.chars().take(8).collect();
+    println!("stormglass / Session: {} ({})", &sid, s.model);
     if s.models_seen.len() > 1 {
         // Recompute per-model counts from the turns slice (not stored in SessionSummary)
         let mut model_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
@@ -104,7 +105,6 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
     }
 }
 
-#[allow(dead_code)]
 pub fn print_json(s: &SessionSummary) {
     println!(
         "{}",

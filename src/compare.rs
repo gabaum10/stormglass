@@ -39,11 +39,8 @@ fn print_comparison_table(paths: &[String], summaries: &[SessionSummary]) {
             if s.session_id.is_empty() {
                 basename.to_string()
             } else {
-                let short = if s.session_id.len() > 8 {
-                    &s.session_id[..8]
-                } else {
-                    &s.session_id
-                };
+                // chars().take(8) — byte slicing panics on multibyte characters
+                let short: String = s.session_id.chars().take(8).collect();
                 format!("{} ({})", basename, short)
             }
         })
