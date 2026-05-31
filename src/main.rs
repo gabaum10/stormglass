@@ -43,7 +43,12 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Analyze { path, json, csv, quiet } => {
+        Commands::Analyze {
+            path,
+            json,
+            csv,
+            quiet,
+        } => {
             // File-not-found: stderr + exit 1
             if !std::path::Path::new(&path).exists() {
                 eprintln!("Error: file not found: {}", path);

@@ -98,9 +98,8 @@ fn f3_token_sum_overflow_saturates() {
         String::from_utf8_lossy(&out.stderr)
     );
     // With saturating_add, total_input_tokens must be u64::MAX (not 4 from wrap)
-    let json: serde_json::Value = serde_json::from_str(
-        &String::from_utf8_lossy(&out.stdout)
-    ).expect("output should be valid JSON");
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
+        .expect("output should be valid JSON");
     assert_eq!(
         json["total_input_tokens"].as_u64().unwrap(),
         u64::MAX,
@@ -122,20 +121,29 @@ fn w2_csv_comma_in_tool_name_stays_18_fields() {
         p
     };
     let out = Command::new(bin())
-        .args(["analyze", jsonl_path.to_str().unwrap(),
-               "--csv", csv_path.to_str().unwrap(), "--quiet"])
+        .args([
+            "analyze",
+            jsonl_path.to_str().unwrap(),
+            "--csv",
+            csv_path.to_str().unwrap(),
+            "--quiet",
+        ])
         .output()
         .unwrap();
     let _ = std::fs::remove_file(&jsonl_path);
 
-    assert!(out.status.success(), "W2: analyze must succeed. stderr: {}",
-            String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "W2: analyze must succeed. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let csv = std::fs::read_to_string(&csv_path).expect("CSV file should exist");
     let _ = std::fs::remove_file(&csv_path);
 
     // Skip header row; the data row must have exactly 19 comma-separated fields
-    let data_row = csv.lines()
+    let data_row = csv
+        .lines()
         .nth(1)
         .expect("CSV must have a data row after the header");
 

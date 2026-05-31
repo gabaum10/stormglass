@@ -27,10 +27,10 @@ pub struct Turn {
     pub tool_count: u32,
     pub stop_reason: String,
     pub cumulative_context: u64,
-    pub burn_delta: i64,      // signed; 0 for turn 1; based on context_tokens
+    pub burn_delta: i64, // signed; 0 for turn 1; based on context_tokens
     pub skill: String,
-    pub elapsed_sec: f64,     // 0.0 for turn 1
-    pub tokens_per_sec: f64,  // 0.0 if elapsed == 0.0
+    pub elapsed_sec: f64,    // 0.0 for turn 1
+    pub tokens_per_sec: f64, // 0.0 if elapsed == 0.0
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -49,20 +49,20 @@ pub struct SummaryAccumulator {
     pub total_cache_write: u64,
     pub turns_with_thinking: u32,
     pub total_turns: u32,
-    pub burn_sum_excl_first: i64,   // sum of burn_delta for turns 2..N (context-based)
+    pub burn_sum_excl_first: i64, // sum of burn_delta for turns 2..N (context-based)
     pub peak_burn_value: i64,
     pub peak_burn_turn: u32,
     pub peak_burn_tools: Vec<String>, // tools of the peak-burn turn (not serialized)
     pub tool_counts: HashMap<String, u32>,
     pub models_seen: HashMap<String, u32>,
-    pub final_context_size: u64,    // last turn's context_tokens
+    pub final_context_size: u64, // last turn's context_tokens
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionSummary {
     pub session_id: String,
-    pub model: String,               // most frequent model
-    pub models_seen: Vec<String>,    // all distinct, sorted; for "mixed session" note
+    pub model: String,            // most frequent model
+    pub models_seen: Vec<String>, // all distinct, sorted; for "mixed session" note
     pub start_time: String,
     pub end_time: String,
     pub duration_sec: f64,
@@ -105,7 +105,10 @@ pub fn flush_turn(
     cum_context: &mut u64,
 ) -> Turn {
     let usage = acc.usage.unwrap_or_else(|| {
-        eprintln!("warn: turn {} missing usage data, defaulting to 0", turn_num);
+        eprintln!(
+            "warn: turn {} missing usage data, defaulting to 0",
+            turn_num
+        );
         Usage::default()
     });
 
@@ -213,7 +216,8 @@ pub fn build_summary(
     let top_tools = tool_frequency.iter().take(5).cloned().collect();
 
     // model = most frequent; ties broken by name asc
-    let model = acc.models_seen
+    let model = acc
+        .models_seen
         .iter()
         .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
         .map(|(k, _)| k.clone())

@@ -59,31 +59,52 @@ fn print_comparison_table(paths: &[String], summaries: &[SessionSummary]) {
         },
         Row {
             label: "Duration",
-            values: summaries.iter().map(|s| format_duration(s.duration_sec)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| format_duration(s.duration_sec))
+                .collect(),
         },
         Row {
             label: "Turns",
-            values: summaries.iter().map(|s| s.total_turns.to_string()).collect(),
+            values: summaries
+                .iter()
+                .map(|s| s.total_turns.to_string())
+                .collect(),
         },
         Row {
             label: "Total input",
-            values: summaries.iter().map(|s| commafy(s.total_input_tokens)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| commafy(s.total_input_tokens))
+                .collect(),
         },
         Row {
             label: "Total output",
-            values: summaries.iter().map(|s| commafy(s.total_output_tokens)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| commafy(s.total_output_tokens))
+                .collect(),
         },
         Row {
             label: "Cache read",
-            values: summaries.iter().map(|s| commafy(s.total_cache_read)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| commafy(s.total_cache_read))
+                .collect(),
         },
         Row {
             label: "Cache write",
-            values: summaries.iter().map(|s| commafy(s.total_cache_write)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| commafy(s.total_cache_write))
+                .collect(),
         },
         Row {
             label: "Avg burn/turn",
-            values: summaries.iter().map(|s| format!("{}", s.avg_burn_rate.round() as i64)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| format!("{}", s.avg_burn_rate.round() as i64))
+                .collect(),
         },
         Row {
             label: "Peak burn",
@@ -94,19 +115,31 @@ fn print_comparison_table(paths: &[String], summaries: &[SessionSummary]) {
         },
         Row {
             label: "Final context",
-            values: summaries.iter().map(|s| commafy(s.final_context_size)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| commafy(s.final_context_size))
+                .collect(),
         },
         Row {
             label: "Thinking ratio",
-            values: summaries.iter().map(|s| format!("{:.1}%", s.thinking_ratio * 100.0)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| format!("{:.1}%", s.thinking_ratio * 100.0))
+                .collect(),
         },
         Row {
             label: "Subagent tokens",
-            values: summaries.iter().map(|s| commafy(s.total_subagent_tokens)).collect(),
+            values: summaries
+                .iter()
+                .map(|s| commafy(s.total_subagent_tokens))
+                .collect(),
         },
         Row {
             label: "Subagent tasks",
-            values: summaries.iter().map(|s| s.subagent_count.to_string()).collect(),
+            values: summaries
+                .iter()
+                .map(|s| s.subagent_count.to_string())
+                .collect(),
         },
     ];
 

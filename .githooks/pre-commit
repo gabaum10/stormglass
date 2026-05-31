@@ -1,0 +1,9 @@
+#!/bin/bash
+set -e
+echo "Running cargo fmt check..."
+cargo fmt --all -- --check
+echo "Running clippy..."
+cargo clippy --all-targets -- -D warnings
+echo "Running tests..."
+cargo test --quiet
+echo "All checks passed."

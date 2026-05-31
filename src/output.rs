@@ -1,5 +1,5 @@
-use std::io::{self, Write};
 use crate::metrics::{SessionSummary, Turn};
+use std::io::{self, Write};
 
 // Insert comma thousands separators. No external dep.
 pub fn commafy(n: u64) -> String {
@@ -7,7 +7,7 @@ pub fn commafy(n: u64) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);
@@ -35,11 +35,13 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
     println!("stormglass / Session: {} ({})", &sid, s.model);
     if s.models_seen.len() > 1 {
         // Recompute per-model counts from the turns slice (not stored in SessionSummary)
-        let mut model_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        let mut model_counts: std::collections::HashMap<&str, u32> =
+            std::collections::HashMap::new();
         for t in turns {
             *model_counts.entry(t.model.as_str()).or_default() += 1;
         }
-        let mut note: Vec<String> = model_counts.iter()
+        let mut note: Vec<String> = model_counts
+            .iter()
             .map(|(m, c)| format!("{} ({})", m, c))
             .collect();
         note.sort();
@@ -48,24 +50,36 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
 
     println!(
         "\nDuration: {}  |  {} turns  |  {} user prompts",
-        format_duration(s.duration_sec), s.total_turns, s.user_turns
+        format_duration(s.duration_sec),
+        s.total_turns,
+        s.user_turns
     );
 
     println!("\nTokens");
     println!(
         "  Input:    {:>12}  (cache read: {} / cache write: {})",
-        commafy(s.total_input_tokens), commafy(s.total_cache_read), commafy(s.total_cache_write)
+        commafy(s.total_input_tokens),
+        commafy(s.total_cache_read),
+        commafy(s.total_cache_write)
     );
     println!("  Output:   {:>12}", commafy(s.total_output_tokens));
     if s.subagent_count > 0 {
-        println!("  Subagent: {:>12}  ({} tasks)", commafy(s.total_subagent_tokens), s.subagent_count);
+        println!(
+            "  Subagent: {:>12}  ({} tasks)",
+            commafy(s.total_subagent_tokens),
+            s.subagent_count
+        );
     }
 
     println!("\nBurn");
-    println!("  Avg per turn:   {} context tokens", commafy(s.avg_burn_rate.round().abs() as u64));
+    println!(
+        "  Avg per turn:   {} context tokens",
+        commafy(s.avg_burn_rate.round().abs() as u64)
+    );
 
     // Peak turn tools: find the turn in the slice, format as "Name xN"
-    let peak_tools_str = turns.iter()
+    let peak_tools_str = turns
+        .iter()
         .find(|t| t.turn == s.peak_burn_turn)
         .map(|t| {
             let mut counts: Vec<(&str, u32)> = Vec::new();
@@ -79,7 +93,10 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
             if counts.is_empty() {
                 String::new()
             } else {
-                let parts: Vec<String> = counts.iter().map(|(n, c)| format!("{} x{}", n, c)).collect();
+                let parts: Vec<String> = counts
+                    .iter()
+                    .map(|(n, c)| format!("{} x{}", n, c))
+                    .collect();
                 format!("  ({})", parts.join(", "))
             }
         })
@@ -93,14 +110,21 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
     println!("\nThinking");
     println!(
         "  Turns with thinking: {}/{}  ({:.1}%)",
-        s.turns_with_thinking, s.total_turns, s.thinking_ratio * 100.0
+        s.turns_with_thinking,
+        s.total_turns,
+        s.thinking_ratio * 100.0
     );
 
     if !s.top_tools.is_empty() {
         println!("\nTools (top 5)");
         let max_name = s.top_tools.iter().map(|(n, _)| n.len()).max().unwrap_or(4);
         for (name, count) in &s.top_tools {
-            println!("  {:<width$}  {}", name, commafy(*count as u64), width = max_name + 1);
+            println!(
+                "  {:<width$}  {}",
+                name,
+                commafy(*count as u64),
+                width = max_name + 1
+            );
         }
     }
 }

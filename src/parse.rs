@@ -6,9 +6,9 @@ use crate::metrics::{flush_turn, parse_ts_ms, SubagentRecord, SummaryAccumulator
 
 pub enum Entry {
     Assistant(AssistantEntry),
-    UserHuman,            // non-meta user with no tool_result block (see D2)
-    Subagent(String),     // raw queue-operation content string for XML extraction
-    Skip,                 // sidechain, meta-user, tool_result-user, unknown, parse error
+    UserHuman,        // non-meta user with no tool_result block (see D2)
+    Subagent(String), // raw queue-operation content string for XML extraction
+    Skip,             // sidechain, meta-user, tool_result-user, unknown, parse error
 }
 
 pub struct AssistantEntry {
@@ -16,10 +16,10 @@ pub struct AssistantEntry {
     pub timestamp: String,
     pub model: String,
     pub stop_reason: Option<String>,
-    pub usage: Option<Usage>,         // None -> warn on flush, default 0
+    pub usage: Option<Usage>, // None -> warn on flush, default 0
     pub content_type: ContentType,
     pub skill: Option<String>,
-    pub session_id: String,           // envelope sessionId (capture once)
+    pub session_id: String, // envelope sessionId (capture once)
 }
 
 pub enum ContentType {
@@ -32,11 +32,11 @@ pub enum ContentType {
 
 pub struct TurnAccumulator {
     pub message_id: String,
-    pub timestamp: String,            // FIRST entry in group
+    pub timestamp: String, // FIRST entry in group
     pub model: String,
     pub stop_reason: Option<String>,
     pub skill: Option<String>,
-    pub usage: Option<Usage>,         // FIRST entry; subsequent ignored
+    pub usage: Option<Usage>, // FIRST entry; subsequent ignored
     pub thinking_count: u32,
     pub text_count: u32,
     pub tool_names: Vec<String>,
@@ -72,7 +72,10 @@ pub fn dispatch_line(line: &str) -> Entry {
 /// All serde_json::Value navigation is concentrated here.
 pub fn dispatch_value(v: &serde_json::Value) -> Entry {
     // Skip sidechains before checking type
-    if v.get("isSidechain").and_then(|x| x.as_bool()).unwrap_or(false) {
+    if v.get("isSidechain")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false)
+    {
         return Entry::Skip;
     }
 
@@ -131,18 +134,21 @@ fn dispatch_assistant(v: &serde_json::Value) -> Entry {
         .map(|s| s.to_owned());
 
     // usage — only if the usage object exists
-    let usage = v.get("message").and_then(|m| m.get("usage")).map(|u| Usage {
-        input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-        output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-        cache_read_input_tokens: u
-            .get("cache_read_input_tokens")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0),
-        cache_creation_input_tokens: u
-            .get("cache_creation_input_tokens")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0),
-    });
+    let usage = v
+        .get("message")
+        .and_then(|m| m.get("usage"))
+        .map(|u| Usage {
+            input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            cache_read_input_tokens: u
+                .get("cache_read_input_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            cache_creation_input_tokens: u
+                .get("cache_creation_input_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+        });
 
     // content_type from message.content[0] (each JSONL line is one content block)
     let content_type = v
@@ -465,8 +471,12 @@ fn flush_and_record(
     // Update summary accumulator (saturating to avoid overflow on malformed large values)
     summary_acc.total_input = summary_acc.total_input.saturating_add(turn.input_tokens);
     summary_acc.total_output = summary_acc.total_output.saturating_add(turn.output_tokens);
-    summary_acc.total_cache_read = summary_acc.total_cache_read.saturating_add(turn.cache_read_tokens);
-    summary_acc.total_cache_write = summary_acc.total_cache_write.saturating_add(turn.cache_write_tokens);
+    summary_acc.total_cache_read = summary_acc
+        .total_cache_read
+        .saturating_add(turn.cache_read_tokens);
+    summary_acc.total_cache_write = summary_acc
+        .total_cache_write
+        .saturating_add(turn.cache_write_tokens);
     summary_acc.total_turns += 1;
     summary_acc.final_context_size = turn.context_tokens;
 
@@ -481,7 +491,10 @@ fn flush_and_record(
 
     // Accumulate model counts
     if !turn.model.is_empty() {
-        *summary_acc.models_seen.entry(turn.model.clone()).or_insert(0) += 1;
+        *summary_acc
+            .models_seen
+            .entry(turn.model.clone())
+            .or_insert(0) += 1;
     }
 
     // Burn tracking: turns >= 2; strict > so earliest turn wins ties
@@ -512,7 +525,10 @@ mod tests {
             "thinking" => r#"{"type":"thinking","thinking":"..."}"#.to_owned(),
             "tool_use" => {
                 let name = tool_name.unwrap_or("Bash");
-                format!(r#"{{"type":"tool_use","name":"{}","id":"t1","input":{{}}}}"#, name)
+                format!(
+                    r#"{{"type":"tool_use","name":"{}","id":"t1","input":{{}}}}"#,
+                    name
+                )
             }
             _ => r#"{"type":"text","text":"hello"}"#.to_owned(),
         };
