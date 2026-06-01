@@ -29,6 +29,9 @@ enum Commands {
         /// Suppress human-readable summary (use with --csv; --json still prints)
         #[arg(long)]
         quiet: bool,
+        /// Skip turns before this turn number (turn numbers stay consistent with full session)
+        #[arg(long, default_value_t = 1)]
+        from_turn: u32,
     },
     /// Compare two or more sessions side-by-side
     Compare {
@@ -37,6 +40,9 @@ enum Commands {
         /// Output as JSON array
         #[arg(long)]
         json: bool,
+        /// Skip turns before this turn number in each session
+        #[arg(long, default_value_t = 1)]
+        from_turn: u32,
     },
 }
 
@@ -48,6 +54,7 @@ fn main() {
             json,
             csv,
             quiet,
+            from_turn,
         } => {
             // File-not-found: stderr + exit 1
             if !std::path::Path::new(&path).exists() {
@@ -55,7 +62,7 @@ fn main() {
                 process::exit(1);
             }
 
-            let result = match parse::parse_session(&path, csv.as_deref()) {
+            let result = match parse::parse_session(&path, csv.as_deref(), from_turn) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error reading {}: {}", path, e);
@@ -81,7 +88,11 @@ fn main() {
             }
         }
 
-        Commands::Compare { paths, json } => {
+        Commands::Compare {
+            paths,
+            json,
+            from_turn,
+        } => {
             if paths.is_empty() {
                 eprintln!("Error: compare requires at least one session file");
                 process::exit(1);
@@ -95,7 +106,7 @@ fn main() {
                 }
             }
 
-            compare::compare_sessions(&paths, json);
+            compare::compare_sessions(&paths, json, from_turn);
         }
     }
 }

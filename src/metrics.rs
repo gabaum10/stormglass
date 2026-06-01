@@ -84,6 +84,7 @@ pub struct SessionSummary {
     pub user_turns: u32,
     pub avg_output_per_turn: f64,
     pub final_context_size: u64,
+    pub from_turn: u32, // 1 means full session; >1 means slice starting at that turn
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp to milliseconds since epoch.
@@ -184,6 +185,7 @@ pub fn build_summary(
     start_time: &str,
     end_time: &str,
     user_turns: u32,
+    from_turn: u32,
 ) -> SessionSummary {
     let total_turns = acc.total_turns;
 
@@ -262,5 +264,6 @@ pub fn build_summary(
         user_turns,
         avg_output_per_turn,
         final_context_size: acc.final_context_size,
+        from_turn: from_turn.max(1),
     }
 }

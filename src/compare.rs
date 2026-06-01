@@ -3,10 +3,10 @@ use crate::output::commafy;
 use crate::parse::parse_session;
 
 /// Parse each path into a SessionSummary, then format side-by-side or JSON.
-pub fn compare_sessions(paths: &[String], json: bool) {
+pub fn compare_sessions(paths: &[String], json: bool, from_turn: u32) {
     let mut summaries: Vec<SessionSummary> = Vec::new();
     for path in paths {
-        match parse_session(path, None) {
+        match parse_session(path, None, from_turn) {
             Ok(result) => summaries.push(result.summary),
             Err(e) => {
                 eprintln!("{}: {}", path, e);
@@ -23,11 +23,16 @@ pub fn compare_sessions(paths: &[String], json: bool) {
         return;
     }
 
-    print_comparison_table(paths, &summaries);
+    print_comparison_table(paths, &summaries, from_turn);
 }
 
-fn print_comparison_table(paths: &[String], summaries: &[SessionSummary]) {
-    // Column headers: basename + first 8 of session_id
+fn print_comparison_table(paths: &[String], summaries: &[SessionSummary], from_turn: u32) {
+    // Column headers: basename + first 8 of session_id + optional slice note
+    let slice_note = if from_turn > 1 {
+        format!(" [turns {}+]", from_turn)
+    } else {
+        String::new()
+    };
     let headers: Vec<String> = paths
         .iter()
         .zip(summaries.iter())
@@ -37,11 +42,11 @@ fn print_comparison_table(paths: &[String], summaries: &[SessionSummary]) {
                 .and_then(|n| n.to_str())
                 .unwrap_or(path.as_str());
             if s.session_id.is_empty() {
-                basename.to_string()
+                format!("{}{}", basename, slice_note)
             } else {
                 // chars().take(8) — byte slicing panics on multibyte characters
                 let short: String = s.session_id.chars().take(8).collect();
-                format!("{} ({})", basename, short)
+                format!("{} ({}){}", basename, short, slice_note)
             }
         })
         .collect();
