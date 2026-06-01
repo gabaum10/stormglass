@@ -48,6 +48,7 @@ pub struct SummaryAccumulator {
     pub total_cache_read: u64,
     pub total_cache_write: u64,
     pub turns_with_thinking: u32,
+    pub total_thinking_output: u64,
     pub total_turns: u32,
     pub burn_sum_excl_first: i64, // sum of burn_delta for turns 2..N (context-based)
     pub peak_burn_value: i64,
@@ -72,6 +73,9 @@ pub struct SessionSummary {
     pub total_cache_read: u64,
     pub total_cache_write: u64,
     pub turns_with_thinking: u32,
+    pub total_thinking_output: u64,
+    pub avg_thinking_output_per_turn: f64,
+    pub total_non_thinking_output: u64,
     pub thinking_ratio: f64,
     pub avg_burn_rate: f64,
     pub peak_burn_turn: u32,
@@ -195,6 +199,14 @@ pub fn build_summary(
         acc.turns_with_thinking as f64 / total_turns as f64
     };
 
+    let total_thinking_output = acc.total_thinking_output;
+    let avg_thinking_output_per_turn = if acc.turns_with_thinking == 0 {
+        0.0
+    } else {
+        total_thinking_output as f64 / acc.turns_with_thinking as f64
+    };
+    let total_non_thinking_output = acc.total_output.saturating_sub(total_thinking_output);
+
     let avg_burn_rate = if total_turns > 1 {
         acc.burn_sum_excl_first as f64 / (total_turns - 1) as f64
     } else {
@@ -252,6 +264,9 @@ pub fn build_summary(
         total_cache_read: acc.total_cache_read,
         total_cache_write: acc.total_cache_write,
         turns_with_thinking: acc.turns_with_thinking,
+        total_thinking_output,
+        avg_thinking_output_per_turn,
+        total_non_thinking_output,
         thinking_ratio,
         avg_burn_rate,
         peak_burn_turn,
