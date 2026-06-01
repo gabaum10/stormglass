@@ -254,6 +254,9 @@ pub fn parse_session(
     // Reject non-regular-file paths up front (e.g. directories) — File::open
     // succeeds on a directory but BufReader::lines() errors on every poll,
     // causing an infinite loop without this guard.
+    // Normalize from_turn so callers passing 0 get full-session behavior.
+    let from_turn = from_turn.max(1);
+
     let meta = std::fs::metadata(path)?;
     if !meta.is_file() {
         return Err(io::Error::new(
@@ -516,10 +519,11 @@ fn flush_and_record(
                 .or_insert(0) += 1;
         }
 
-        // Burn tracking: first included turn acts as turn-1 baseline (burn_delta 0
-        // for it came from flush_turn); subsequent turns within slice track deltas.
-        // Use the same rule as before: skip the very first turn of the slice.
-        if n > from_turn || (from_turn == 1 && n >= 2) {
+        // Burn tracking: skip only the absolute first turn (n == 1), which always
+        // has burn_delta == 0 from flush_turn (prev_context_tokens is None).
+        // When from_turn > 1, the first included turn has a real delta because
+        // prev-state was maintained through all skipped turns — include it.
+        if n >= 2 {
             summary_acc.burn_sum_excl_first += turn.burn_delta;
             if turn.burn_delta > summary_acc.peak_burn_value {
                 summary_acc.peak_burn_value = turn.burn_delta;

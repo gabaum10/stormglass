@@ -245,6 +245,184 @@ fn test_total_cache_write() {
     );
 }
 
+// ── --from-turn tests ────────────────────────────────────────────────────────
+//
+// From the truth table above, turns 5-12 token sums:
+//   input:       18000+22000+25000+28000+32000+35000+40000+45000 = 245,000
+//   output:        750+ 400+  800+  600+  900+ 500+  700+ 1200  =   5,850
+//   cache_read:  10000+14000+17000+20000+24000+27000+30000+35000 = 177,000
+//   cache_write:   500+    0+ 1000+    0+  500+   0+ 1000+    0  =   3,000
+//   total_turns: 8
+//
+// Context sizes (input + cache_read + cache_write):
+//   Turn 4: 15000+8000+0 = 23000
+//   Turn 5: 18000+10000+500 = 28500  → burn_delta = 28500 - 23000 = 5500
+
+fn parse_summary_json_from_turn(from_turn: u32) -> serde_json::Value {
+    let path = fixture_path();
+    let (code, stdout, stderr) = run_stormglass(&[
+        "analyze",
+        &path,
+        "--json",
+        "--from-turn",
+        &from_turn.to_string(),
+    ]);
+    assert_eq!(
+        code, 0,
+        "stormglass exited with code {} — stderr: {}",
+        code, stderr
+    );
+    serde_json::from_str(&stdout).expect("stdout was not valid JSON")
+}
+
+#[test]
+fn test_from_turn_5_token_sums() {
+    let summary = parse_summary_json_from_turn(5);
+    assert_eq!(
+        summary["total_turns"].as_u64().unwrap(),
+        8,
+        "--from-turn 5: total_turns should be 8"
+    );
+    assert_eq!(
+        summary["total_input_tokens"].as_u64().unwrap(),
+        245_000,
+        "--from-turn 5: total_input_tokens should be 245000"
+    );
+    assert_eq!(
+        summary["total_output_tokens"].as_u64().unwrap(),
+        5_850,
+        "--from-turn 5: total_output_tokens should be 5850"
+    );
+    assert_eq!(
+        summary["total_cache_read"].as_u64().unwrap(),
+        177_000,
+        "--from-turn 5: total_cache_read should be 177000"
+    );
+    assert_eq!(
+        summary["total_cache_write"].as_u64().unwrap(),
+        3_000,
+        "--from-turn 5: total_cache_write should be 3000"
+    );
+}
+
+#[test]
+fn test_from_turn_1_equals_full_session() {
+    // --from-turn 1 must produce identical output to no flag
+    let summary_default = parse_summary_json();
+    let summary_from1 = parse_summary_json_from_turn(1);
+
+    assert_eq!(
+        summary_default["total_turns"], summary_from1["total_turns"],
+        "--from-turn 1: total_turns must match default"
+    );
+    assert_eq!(
+        summary_default["total_input_tokens"], summary_from1["total_input_tokens"],
+        "--from-turn 1: total_input_tokens must match default"
+    );
+    assert_eq!(
+        summary_default["total_output_tokens"], summary_from1["total_output_tokens"],
+        "--from-turn 1: total_output_tokens must match default"
+    );
+    assert_eq!(
+        summary_default["total_cache_read"], summary_from1["total_cache_read"],
+        "--from-turn 1: total_cache_read must match default"
+    );
+    assert_eq!(
+        summary_default["total_cache_write"], summary_from1["total_cache_write"],
+        "--from-turn 1: total_cache_write must match default"
+    );
+}
+
+#[test]
+fn test_from_turn_999_graceful() {
+    // --from-turn 999: no turns in range — must exit 0 with "0 turns — no telemetry"
+    let path = fixture_path();
+    let (code, stdout, stderr) = run_stormglass(&["analyze", &path, "--from-turn", "999"]);
+    assert_eq!(
+        code, 0,
+        "--from-turn 999 must exit 0, got {} — stderr: {}",
+        code, stderr
+    );
+    assert!(
+        stdout.contains("0 turns") && stdout.contains("no telemetry"),
+        "--from-turn 999: expected '0 turns — no telemetry', got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_from_turn_5_burn_delta_first_turn() {
+    // The first included turn (turn 5) must have a non-zero, correct burn_delta.
+    // burn_delta[5] = ctx[5] - ctx[4] = 28500 - 23000 = 5500
+    // We use --csv to get per-turn data and parse the result.
+    let path = fixture_path();
+
+    let csv_path = {
+        let mut p = std::env::temp_dir();
+        p.push("stormglass_from5_burn_test.csv");
+        p.to_string_lossy().to_string()
+    };
+
+    let (code, _stdout, stderr) = run_stormglass(&[
+        "analyze",
+        &path,
+        "--from-turn",
+        "5",
+        "--csv",
+        &csv_path,
+        "--quiet",
+    ]);
+    assert_eq!(
+        code, 0,
+        "--from-turn 5 --csv failed with code {} — stderr: {}",
+        code, stderr
+    );
+
+    let csv_content = std::fs::read_to_string(&csv_path).expect("could not read CSV output");
+
+    // Find the header line to locate the turn and burn_delta column indices
+    let mut lines = csv_content.lines();
+    let header = lines.next().expect("CSV has no header");
+    let cols: Vec<&str> = header.split(',').collect();
+    let turn_col = cols
+        .iter()
+        .position(|&c| c == "turn")
+        .expect("no 'turn' column in CSV");
+    let burn_col = cols
+        .iter()
+        .position(|&c| c == "burn_delta")
+        .expect("no 'burn_delta' column in CSV");
+
+    // Find turn 5's row
+    let turn5_row = lines
+        .find(|line| {
+            let fields: Vec<&str> = line.splitn(turn_col + 2, ',').collect();
+            fields.get(turn_col).map(|v| v.trim()) == Some("5")
+        })
+        .expect("turn 5 not found in CSV");
+
+    let fields: Vec<&str> = turn5_row.split(',').collect();
+    let burn_delta: i64 = fields
+        .get(burn_col)
+        .expect("burn_delta column missing in turn 5 row")
+        .trim()
+        .parse()
+        .expect("burn_delta is not a valid i64");
+
+    assert_ne!(
+        burn_delta, 0,
+        "turn 5 burn_delta must be non-zero (got 0 — bug: first-slice-turn excluded)"
+    );
+    assert_eq!(
+        burn_delta, 5500,
+        "turn 5 burn_delta must be 5500 (28500 - 23000), got {}",
+        burn_delta
+    );
+
+    // Clean up
+    let _ = std::fs::remove_file(&csv_path);
+}
+
 // ── Sidechain exclusion proof ────────────────────────────────────────────────
 
 #[test]
