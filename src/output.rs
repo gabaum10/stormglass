@@ -32,7 +32,12 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
     // Header: session id (first 8 Unicode chars), model, optional mixed-session note.
     // Use chars().take(8) — byte slicing panics on multibyte characters.
     let sid: String = s.session_id.chars().take(8).collect();
-    println!("stormglass / Session: {} ({})", &sid, s.model);
+    let slice_note = if s.from_turn > 1 {
+        format!(" [turns {}+]", s.from_turn)
+    } else {
+        String::new()
+    };
+    println!("stormglass / Session: {} ({}){}", &sid, s.model, slice_note);
     if s.models_seen.len() > 1 {
         // Recompute per-model counts from the turns slice (not stored in SessionSummary)
         let mut model_counts: std::collections::HashMap<&str, u32> =

@@ -243,7 +243,14 @@ fn extract_u64(content: &str, tag: &str) -> Option<u64> {
 // ── Streaming parse ──────────────────────────────────────────────────────────
 
 /// Parse a session JSONL file, optionally streaming CSV rows.
-pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResult> {
+/// `from_turn`: turns numbered below this value are counted but excluded from
+/// metrics, CSV output, and the returned `turns` vec. Use 1 (the default) for
+/// a full-session analysis.
+pub fn parse_session(
+    path: &str,
+    csv_path: Option<&str>,
+    from_turn: u32,
+) -> io::Result<ParseResult> {
     // Reject non-regular-file paths up front (e.g. directories) — File::open
     // succeeds on a directory but BufReader::lines() errors on every poll,
     // causing an infinite loop without this guard.
@@ -371,11 +378,14 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
                             &mut prev_timestamp_ms,
                             &mut cum_context,
                             &mut summary_acc,
+                            from_turn,
                         );
-                        if let Some(ref mut w) = csv_writer {
-                            crate::output::write_csv_row(&turn, w)?;
+                        if turn.turn >= from_turn {
+                            if let Some(ref mut w) = csv_writer {
+                                crate::output::write_csv_row(&turn, w)?;
+                            }
+                            turns.push(turn);
                         }
-                        turns.push(turn);
                     }
 
                     // Start new group — consume entry into accumulator and record
@@ -428,11 +438,14 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
             &mut prev_timestamp_ms,
             &mut cum_context,
             &mut summary_acc,
+            from_turn,
         );
-        if let Some(ref mut w) = csv_writer {
-            crate::output::write_csv_row(&turn, w)?;
+        if turn.turn >= from_turn {
+            if let Some(ref mut w) = csv_writer {
+                crate::output::write_csv_row(&turn, w)?;
+            }
+            turns.push(turn);
         }
-        turns.push(turn);
     }
 
     let summary = crate::metrics::build_summary(
@@ -442,6 +455,7 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
         &start_time,
         &end_time,
         user_turns,
+        from_turn,
     );
 
     Ok(ParseResult {
@@ -452,6 +466,8 @@ pub fn parse_session(path: &str, csv_path: Option<&str>) -> io::Result<ParseResu
 }
 
 /// Flush a TurnAccumulator and update SummaryAccumulator.
+/// Turns with `turn_num < from_turn` still update prev-state (so burn deltas
+/// stay correct for the slice) but are excluded from all summary counters.
 fn flush_and_record(
     acc: TurnAccumulator,
     turn_num: &mut u32,
@@ -459,6 +475,7 @@ fn flush_and_record(
     prev_timestamp_ms: &mut Option<i64>,
     cum_context: &mut u64,
     summary_acc: &mut SummaryAccumulator,
+    from_turn: u32,
 ) -> Turn {
     *turn_num += 1;
     let n = *turn_num;
@@ -468,46 +485,51 @@ fn flush_and_record(
 
     let turn = flush_turn(acc, n, *prev_context_tokens, prev_ts_ms, cum_context);
 
-    // Update summary accumulator (saturating to avoid overflow on malformed large values)
-    summary_acc.total_input = summary_acc.total_input.saturating_add(turn.input_tokens);
-    summary_acc.total_output = summary_acc.total_output.saturating_add(turn.output_tokens);
-    summary_acc.total_cache_read = summary_acc
-        .total_cache_read
-        .saturating_add(turn.cache_read_tokens);
-    summary_acc.total_cache_write = summary_acc
-        .total_cache_write
-        .saturating_add(turn.cache_write_tokens);
-    summary_acc.total_turns += 1;
-    summary_acc.final_context_size = turn.context_tokens;
+    // Only accumulate metrics for turns within the requested slice.
+    if n >= from_turn {
+        // Update summary accumulator (saturating to avoid overflow on malformed large values)
+        summary_acc.total_input = summary_acc.total_input.saturating_add(turn.input_tokens);
+        summary_acc.total_output = summary_acc.total_output.saturating_add(turn.output_tokens);
+        summary_acc.total_cache_read = summary_acc
+            .total_cache_read
+            .saturating_add(turn.cache_read_tokens);
+        summary_acc.total_cache_write = summary_acc
+            .total_cache_write
+            .saturating_add(turn.cache_write_tokens);
+        summary_acc.total_turns += 1;
+        summary_acc.final_context_size = turn.context_tokens;
 
-    if turn.has_thinking {
-        summary_acc.turns_with_thinking += 1;
-    }
+        if turn.has_thinking {
+            summary_acc.turns_with_thinking += 1;
+        }
 
-    // Accumulate tools
-    for tool in &turn.tools_called {
-        *summary_acc.tool_counts.entry(tool.clone()).or_insert(0) += 1;
-    }
+        // Accumulate tools
+        for tool in &turn.tools_called {
+            *summary_acc.tool_counts.entry(tool.clone()).or_insert(0) += 1;
+        }
 
-    // Accumulate model counts
-    if !turn.model.is_empty() {
-        *summary_acc
-            .models_seen
-            .entry(turn.model.clone())
-            .or_insert(0) += 1;
-    }
+        // Accumulate model counts
+        if !turn.model.is_empty() {
+            *summary_acc
+                .models_seen
+                .entry(turn.model.clone())
+                .or_insert(0) += 1;
+        }
 
-    // Burn tracking: turns >= 2; strict > so earliest turn wins ties
-    if n >= 2 {
-        summary_acc.burn_sum_excl_first += turn.burn_delta;
-        if turn.burn_delta > summary_acc.peak_burn_value {
-            summary_acc.peak_burn_value = turn.burn_delta;
-            summary_acc.peak_burn_turn = n;
-            summary_acc.peak_burn_tools = turn.tools_called.clone();
+        // Burn tracking: first included turn acts as turn-1 baseline (burn_delta 0
+        // for it came from flush_turn); subsequent turns within slice track deltas.
+        // Use the same rule as before: skip the very first turn of the slice.
+        if n > from_turn || (from_turn == 1 && n >= 2) {
+            summary_acc.burn_sum_excl_first += turn.burn_delta;
+            if turn.burn_delta > summary_acc.peak_burn_value {
+                summary_acc.peak_burn_value = turn.burn_delta;
+                summary_acc.peak_burn_turn = n;
+                summary_acc.peak_burn_tools = turn.tools_called.clone();
+            }
         }
     }
 
-    // Advance prev state for next flush
+    // Always advance prev state so burn deltas stay correct for subsequent turns.
     *prev_context_tokens = Some(turn.context_tokens);
     *prev_timestamp_ms = this_ts_ms;
 
