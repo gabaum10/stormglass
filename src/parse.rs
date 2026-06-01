@@ -510,6 +510,9 @@ fn flush_and_record(
 
         if turn.has_thinking {
             summary_acc.turns_with_thinking += 1;
+            summary_acc.total_thinking_output = summary_acc
+                .total_thinking_output
+                .saturating_add(turn.output_tokens);
         }
 
         // Accumulate tools

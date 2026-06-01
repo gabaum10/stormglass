@@ -152,6 +152,45 @@ fn test_thinking_ratio() {
     );
 }
 
+// ── Thinking token volume ────────────────────────────────────────────────────
+//
+// Thinking turns: 2 (output=450), 6 (output=400), 7 (output=800)
+//   total_thinking_output     = 450 + 400 + 800 = 1,650
+//   total_non_thinking_output = 7,700 - 1,650   = 6,050
+//   avg_thinking_output_per_turn = 1650 / 3     = 550.0
+
+#[test]
+fn test_total_thinking_output() {
+    let summary = parse_summary_json();
+    assert_eq!(
+        summary["total_thinking_output"].as_u64().unwrap(),
+        1_650,
+        "total_thinking_output must be 1650 (turns 2+6+7: 450+400+800)"
+    );
+}
+
+#[test]
+fn test_total_non_thinking_output() {
+    let summary = parse_summary_json();
+    assert_eq!(
+        summary["total_non_thinking_output"].as_u64().unwrap(),
+        6_050,
+        "total_non_thinking_output must be 6050 (7700 - 1650)"
+    );
+}
+
+#[test]
+fn test_avg_thinking_output_per_turn() {
+    let summary = parse_summary_json();
+    let avg = summary["avg_thinking_output_per_turn"].as_f64().unwrap();
+    // 1650 / 3 = 550.0 exactly
+    assert!(
+        (avg - 550.0).abs() < 1e-9,
+        "avg_thinking_output_per_turn should be 550.0, got {}",
+        avg
+    );
+}
+
 // ── D1 correctness gate ──────────────────────────────────────────────────────
 
 #[test]

@@ -119,6 +119,17 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
         s.total_turns,
         s.thinking_ratio * 100.0
     );
+    if s.turns_with_thinking > 0 {
+        println!(
+            "  Thinking turns output: {:>12}  (avg {}/thinking-turn)",
+            commafy(s.total_thinking_output),
+            commafy(s.avg_thinking_output_per_turn.round() as u64)
+        );
+        println!(
+            "  Non-thinking output:   {:>12}",
+            commafy(s.total_non_thinking_output)
+        );
+    }
 
     if !s.top_tools.is_empty() {
         println!("\nTools (top 5)");
