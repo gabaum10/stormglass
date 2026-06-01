@@ -189,13 +189,19 @@ fn dispatch_assistant(v: &serde_json::Value) -> Entry {
 }
 
 fn dispatch_user(v: &serde_json::Value) -> Entry {
-    // meta-user -> Skip
-    if v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false) {
-        return Entry::Skip;
+    let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
+    let content = v.get("message").and_then(|m| m.get("content"));
+
+    if is_meta {
+        // Hook-delivered prompts arrive as isMeta with string content. Count them.
+        // Skill loads arrive as isMeta with list content. Skip them.
+        return match content {
+            Some(c) if c.is_string() => Entry::UserHuman,
+            _ => Entry::Skip,
+        };
     }
 
     // D2: inspect content to determine if this is a real human turn
-    let content = v.get("message").and_then(|m| m.get("content"));
     match content {
         // string content -> human turn
         Some(c) if c.is_string() => Entry::UserHuman,
@@ -610,9 +616,17 @@ mod tests {
     }
 
     #[test]
-    fn test_meta_user_skip() {
-        let line = r#"{"type":"user","isMeta":true,"message":{"content":"meta content"}}"#;
+    fn test_meta_user_list_skip() {
+        // isMeta with list content (skill load) -> Skip
+        let line = r#"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"skill load"}]}}"#;
         assert!(matches!(dispatch_line(line), Entry::Skip));
+    }
+
+    #[test]
+    fn test_meta_user_string_content_human() {
+        // isMeta with string content (stop-hook-delivered prompt) -> UserHuman
+        let line = r#"{"type":"user","isMeta":true,"message":{"content":"meta content"}}"#;
+        assert!(matches!(dispatch_line(line), Entry::UserHuman));
     }
 
     #[test]
