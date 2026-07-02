@@ -91,19 +91,57 @@ fn run_stormglass(args: &[&str]) -> (i32, String, String) {
     (code, stdout, stderr)
 }
 
-// ── Smoke test: empty file → "0 turns — no telemetry", exit 0 ──────────────
+// ── Smoke tests: empty file → exit 0; notice on stdout only in human mode ──
 
 #[test]
 fn test_empty_file_smoke() {
     let path = empty_fixture_path();
     std::fs::write(&path, "").expect("could not write empty fixture");
 
-    let (code, stdout, _stderr) = run_stormglass(&["analyze", &path, "--json"]);
+    let (code, stdout, _stderr) = run_stormglass(&["analyze", &path]);
     assert_eq!(code, 0, "exit code should be 0 for empty file");
     assert!(
         stdout.contains("0 turns") && stdout.contains("no telemetry"),
         "expected '0 turns — no telemetry' in stdout, got: {}",
         stdout
+    );
+}
+
+#[test]
+fn test_empty_file_json_stdout_is_valid_json() {
+    let path = empty_fixture_path();
+    std::fs::write(&path, "").expect("could not write empty fixture");
+
+    let (code, stdout, stderr) = run_stormglass(&["analyze", &path, "--json", "--quiet"]);
+    assert_eq!(code, 0, "exit code should be 0 for empty file");
+    // Entire stdout must parse as one JSON document — no notice text mixed in.
+    let summary: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--json stdout was not valid JSON for empty file");
+    assert_eq!(summary["total_turns"], 0);
+    assert!(
+        stderr.contains("0 turns"),
+        "human notice should move to stderr under --json, got stderr: {}",
+        stderr
+    );
+}
+
+// ── Regression: --json --quiet must emit the JSON document on stdout ────────
+// Consumers capture stdout (`$(stormglass ... --json --quiet 2>/dev/null)`)
+// and pipe it into a JSON parser. Anything on stdout that isn't the JSON
+// document — or the document landing on stderr — breaks them silently.
+
+#[test]
+fn test_json_quiet_stdout_is_exactly_one_json_document() {
+    let path = fixture_path();
+    let (code, stdout, _stderr) = run_stormglass(&["analyze", &path, "--json", "--quiet"]);
+    assert_eq!(code, 0, "stormglass exited with code {}", code);
+    assert!(!stdout.trim().is_empty(), "--json stdout must not be empty");
+    // Parsing the FULL stdout (not a substring) proves nothing else leaked in.
+    let summary: serde_json::Value = serde_json::from_str(&stdout)
+        .expect("--json --quiet stdout was not a single valid JSON document");
+    assert!(
+        summary["total_turns"].as_u64().unwrap_or(0) > 0,
+        "summary should carry real data"
     );
 }
 
