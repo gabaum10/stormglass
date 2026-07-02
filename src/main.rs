@@ -70,9 +70,16 @@ fn main() {
                 }
             };
 
-            // 0 turns: no telemetry, exit 0
+            // 0 turns: no telemetry, exit 0.
+            // With --json, stdout must stay parseable JSON — consumers pipe it
+            // straight into a JSON parser, so the human notice goes to stderr.
             if result.summary.total_turns == 0 {
-                println!("0 turns — no telemetry");
+                if json {
+                    output::print_json(&result.summary);
+                    eprintln!("0 turns — no telemetry");
+                } else if !quiet {
+                    println!("0 turns — no telemetry");
+                }
                 process::exit(0);
             }
 
