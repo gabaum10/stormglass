@@ -101,9 +101,9 @@ The subagent-file split adds six new fields:
 **CSV** (`--csv <path>`): one row per turn. Header:
 
 ```
-turn,timestamp,model,input_tokens,output_tokens,cache_read,cache_write,has_thinking,
+turn,timestamp,model,input_tokens,output_tokens,cache_read,cache_write,context_tokens,has_thinking,
 thinking_block_count,content_blocks,tool_count,tools_called,stop_reason,
-cumulative_input,burn_delta,skill,elapsed_sec,tokens_per_sec
+cumulative_context,burn_delta,skill,elapsed_sec,tokens_per_sec
 ```
 
 `tools_called` uses `;` as separator (no commas inside the cell).
