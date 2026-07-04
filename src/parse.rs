@@ -600,14 +600,19 @@ fn aggregate_one_agent_file(path: &std::path::Path) -> Option<Usage> {
         groups
             .entry(message_id)
             .and_modify(|acc| {
+                // input/cache are constant within a group in well-formed data,
+                // so max() is a no-op there. It also guards against a
+                // malformed trailing line that's missing a field (usage
+                // defaults it to 0) clobbering a valid value from an earlier
+                // line in the same group.
                 acc.output_tokens = acc.output_tokens.max(usage.output_tokens);
-                // input/cache are constant within a group in well-formed data;
-                // re-assigning from the latest line is a no-op there and self-
-                // heals if a line is ever missing them (usage defaults to 0
-                // only when the field itself is absent from that line).
-                acc.input_tokens = usage.input_tokens;
-                acc.cache_read_input_tokens = usage.cache_read_input_tokens;
-                acc.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+                acc.input_tokens = acc.input_tokens.max(usage.input_tokens);
+                acc.cache_read_input_tokens = acc
+                    .cache_read_input_tokens
+                    .max(usage.cache_read_input_tokens);
+                acc.cache_creation_input_tokens = acc
+                    .cache_creation_input_tokens
+                    .max(usage.cache_creation_input_tokens);
             })
             .or_insert(usage);
     }
