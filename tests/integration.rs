@@ -520,3 +520,239 @@ fn test_sidechain_excluded() {
         "sidechain tokens must be excluded from total_input_tokens"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W448 — subagent-file token split (input/output/cache_read/cache_write)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Fixture: tests/fixtures/with_subagents.jsonl (main transcript, 2 turns) +
+//          tests/fixtures/with_subagents/subagents/agent-taska.jsonl
+//          tests/fixtures/with_subagents/subagents/agent-taskb.jsonl
+//          tests/fixtures/with_subagents/subagents/agent-taska.meta.json (must be ignored)
+//
+// CRITICAL (ADDENDUM #1): every assistant line in the agent-*.jsonl files sets
+// isSidechain:true — the exact flag the main dispatch loop skips. This fixture
+// exercises the production code path (a direct read, no dispatch_value reuse).
+// A build that routed these lines through dispatch_value would silently
+// return all-zero split fields here; that is the failure this fixture exists
+// to catch.
+//
+// agent-taska.jsonl:
+//   group amsg1: 3 lines, usage input=1000/cache_read=500/cache_write=50
+//                (constant), output grows 100 -> 150 -> 200 (last/max=200)
+//   group amsg2: 1 line,  input=2000/output=300/cache_read=800/cache_write=0
+//   file totals (deduped): input=3000 output=500 cache_read=1300 cache_write=50
+//
+// agent-taskb.jsonl:
+//   group bmsg1: 2 lines, usage input=4000/cache_read=1000/cache_write=100
+//                (constant), output grows 400 -> 450 (last/max=450)
+//   file totals (deduped): input=4000 output=450 cache_read=1000 cache_write=100
+//
+// AGGREGATED (correct, group-by-message.id, max-output-per-group):
+//   subagent_input_tokens       = 3000 + 4000 = 7000
+//   subagent_output_tokens      =  500 +  450 =  950
+//   subagent_cache_read_tokens  = 1300 + 1000 = 2300
+//   subagent_cache_write_tokens =   50 +  100 =  150
+//   subagent_agent_file_count   = 2
+//   subagent_usage_total_tokens = 7000+950+2300+150 = 10400
+//
+// NAIVE SUM TRAP (documents the dedup requirement — must NOT match aggregated):
+//   naive input  = (1000*3 + 2000) + (4000*2)         = 5000 + 8000  = 13000
+//   naive output = (100+150+200+300) + (400+450)      =  750 +  850 =  1600
+//   All naive sums are strictly larger than the deduped totals above.
+//
+// The main transcript (with_subagents.jsonl) separately carries 2
+// queue-operation subagent_tokens notifications (3000, 4000 -> lump total
+// 7000, subagent_count 2) — a DIFFERENT source than the file-aggregated
+// split. They happen to share input's value here by coincidence of the
+// fixture's numbers; the two fields are not asserted to be related.
+// ══════════════════════════════════════════════════════════════════════════════
+
+fn with_subagents_fixture_path() -> String {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    format!("{}/tests/fixtures/with_subagents.jsonl", manifest)
+}
+
+fn parse_with_subagents_json() -> serde_json::Value {
+    let path = with_subagents_fixture_path();
+    let (code, stdout, stderr) = run_stormglass(&["analyze", &path, "--json"]);
+    assert_eq!(
+        code, 0,
+        "stormglass exited with code {} — stderr: {}",
+        code, stderr
+    );
+    serde_json::from_str(&stdout).expect("stdout was not valid JSON")
+}
+
+#[test]
+fn test_subagent_split_matches_hand_computed_dedup() {
+    let summary = parse_with_subagents_json();
+    assert_eq!(
+        summary["subagent_input_tokens"].as_u64().unwrap(),
+        7_000,
+        "subagent_input_tokens must be the group-deduped sum, not the naive 13000"
+    );
+    assert_eq!(
+        summary["subagent_output_tokens"].as_u64().unwrap(),
+        950,
+        "subagent_output_tokens must take max-per-group (500+450), not the naive 1600"
+    );
+    assert_eq!(
+        summary["subagent_cache_read_tokens"].as_u64().unwrap(),
+        2_300,
+        "subagent_cache_read_tokens must be deduped (1300+1000)"
+    );
+    assert_eq!(
+        summary["subagent_cache_write_tokens"].as_u64().unwrap(),
+        150,
+        "subagent_cache_write_tokens must be deduped (50+100)"
+    );
+}
+
+#[test]
+fn test_subagent_split_naive_sum_would_be_strictly_larger() {
+    // Documents the aggregation trap: summing every content-block line
+    // (ignoring message.id grouping) inflates every field. If a future
+    // change regresses to naive summation, these fields would jump to the
+    // naive values (13000 / 1600) and this assertion would catch it.
+    let summary = parse_with_subagents_json();
+    let naive_input = 13_000u64;
+    let naive_output = 1_600u64;
+    assert!(
+        summary["subagent_input_tokens"].as_u64().unwrap() < naive_input,
+        "deduped input must be strictly less than the naive all-block sum"
+    );
+    assert!(
+        summary["subagent_output_tokens"].as_u64().unwrap() < naive_output,
+        "deduped output must be strictly less than the naive all-block sum"
+    );
+}
+
+#[test]
+fn test_subagent_usage_total_is_auditable_sum() {
+    let summary = parse_with_subagents_json();
+    let input = summary["subagent_input_tokens"].as_u64().unwrap();
+    let output = summary["subagent_output_tokens"].as_u64().unwrap();
+    let cache_read = summary["subagent_cache_read_tokens"].as_u64().unwrap();
+    let cache_write = summary["subagent_cache_write_tokens"].as_u64().unwrap();
+    assert_eq!(
+        summary["subagent_usage_total_tokens"].as_u64().unwrap(),
+        input + output + cache_read + cache_write,
+        "subagent_usage_total_tokens must equal the sum of the four split fields"
+    );
+    assert_eq!(
+        summary["subagent_usage_total_tokens"].as_u64().unwrap(),
+        10_400
+    );
+}
+
+#[test]
+fn test_subagent_agent_file_count_matches_fixture() {
+    // 2 agent-*.jsonl files in the fixture's subagents dir (the .meta.json
+    // companion must NOT be counted — it doesn't end in .jsonl).
+    let summary = parse_with_subagents_json();
+    assert_eq!(
+        summary["subagent_agent_file_count"].as_u64().unwrap(),
+        2,
+        "subagent_agent_file_count must equal the count of agent-*.jsonl files, excluding .meta.json"
+    );
+}
+
+#[test]
+fn test_subagent_split_sidechain_fixture_yields_nonzero() {
+    // ADDENDUM #1 (binding): the fixture's agent files set isSidechain:true.
+    // A build that reused dispatch_value (which skips isSidechain) would
+    // return all-zero split totals here even though the fixture data is
+    // real. Nonzero totals prove the aggregator reads agent files directly.
+    let summary = parse_with_subagents_json();
+    assert!(summary["subagent_input_tokens"].as_u64().unwrap() > 0);
+    assert!(summary["subagent_output_tokens"].as_u64().unwrap() > 0);
+    assert!(summary["subagent_cache_read_tokens"].as_u64().unwrap() > 0);
+    assert!(summary["subagent_cache_write_tokens"].as_u64().unwrap() > 0);
+    assert!(summary["subagent_agent_file_count"].as_u64().unwrap() > 0);
+    assert!(summary["subagent_usage_total_tokens"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn test_subagent_split_zero_on_fixture_without_subagents_dir() {
+    // sample_session.jsonl has no <sid>/subagents dir on disk. All 5 new
+    // fields must be 0 and the process must exit 0 without panicking —
+    // never an error, this is the expected state for sessions analyzed
+    // without their sibling subagents directory.
+    let summary = parse_summary_json();
+    assert_eq!(summary["subagent_input_tokens"].as_u64().unwrap(), 0);
+    assert_eq!(summary["subagent_output_tokens"].as_u64().unwrap(), 0);
+    assert_eq!(summary["subagent_cache_read_tokens"].as_u64().unwrap(), 0);
+    assert_eq!(summary["subagent_cache_write_tokens"].as_u64().unwrap(), 0);
+    assert_eq!(summary["subagent_agent_file_count"].as_u64().unwrap(), 0);
+    assert_eq!(summary["subagent_usage_total_tokens"].as_u64().unwrap(), 0);
+}
+
+#[test]
+fn test_subagent_split_backward_compat_queue_op_fields_unchanged() {
+    // sample_session.jsonl's existing D1-gate values must not move:
+    // subagent_count == 2, total_subagent_tokens == 13000 (queue-op lump,
+    // unrelated to the new file-aggregated split fields above).
+    let summary = parse_summary_json();
+    assert_eq!(summary["subagent_count"].as_u64().unwrap(), 2);
+    assert_eq!(summary["total_subagent_tokens"].as_u64().unwrap(), 13_000);
+}
+
+#[test]
+fn test_subagent_split_csv_header_unchanged() {
+    // The CSV is per-turn; the session-level subagent split must not appear
+    // in it, and the header must stay byte-identical to the pre-W448 header.
+    let path = fixture_path();
+    let csv_path = {
+        let mut p = std::env::temp_dir();
+        p.push("stormglass_w448_csv_header_test.csv");
+        p.to_string_lossy().to_string()
+    };
+    let (code, _stdout, stderr) =
+        run_stormglass(&["analyze", &path, "--csv", &csv_path, "--quiet"]);
+    assert_eq!(
+        code, 0,
+        "analyze --csv failed with code {} — stderr: {}",
+        code, stderr
+    );
+    let csv_content = std::fs::read_to_string(&csv_path).expect("could not read CSV output");
+    let header = csv_content.lines().next().expect("CSV has no header");
+    assert_eq!(
+        header,
+        "turn,timestamp,model,input_tokens,output_tokens,cache_read,cache_write,context_tokens,has_thinking,thinking_block_count,content_blocks,tool_count,tools_called,stop_reason,cumulative_context,burn_delta,skill,elapsed_sec,tokens_per_sec",
+        "CSV header must stay byte-identical after W448"
+    );
+    let _ = std::fs::remove_file(&csv_path);
+}
+
+#[test]
+fn test_subagent_split_human_output_line_present_with_agent_files() {
+    let path = with_subagents_fixture_path();
+    let (code, stdout, stderr) = run_stormglass(&["analyze", &path]);
+    assert_eq!(
+        code, 0,
+        "stormglass exited with code {} — stderr: {}",
+        code, stderr
+    );
+    assert!(
+        stdout.contains("Subagent (agent files):"),
+        "human output must show the split line when agent files are present, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_subagent_split_human_output_absent_without_agent_files() {
+    let path = fixture_path(); // sample_session.jsonl, no subagents dir
+    let (code, stdout, stderr) = run_stormglass(&["analyze", &path]);
+    assert_eq!(
+        code, 0,
+        "stormglass exited with code {} — stderr: {}",
+        code, stderr
+    );
+    assert!(
+        !stdout.contains("Subagent (agent files):"),
+        "human output must not show the split line when no agent files are present, got: {}",
+        stdout
+    );
+}

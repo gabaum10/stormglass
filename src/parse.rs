@@ -1,6 +1,10 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead};
 
-use crate::metrics::{flush_turn, parse_ts_ms, SubagentRecord, SummaryAccumulator, Turn, Usage};
+use crate::metrics::{
+    flush_turn, parse_ts_ms, SessionMeta, SubagentRecord, SubagentSplit, SummaryAccumulator, Turn,
+    Usage,
+};
 
 // ── Entry types ──────────────────────────────────────────────────────────────
 
@@ -137,18 +141,7 @@ fn dispatch_assistant(v: &serde_json::Value) -> Entry {
     let usage = v
         .get("message")
         .and_then(|m| m.get("usage"))
-        .map(|u| Usage {
-            input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-            output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-            cache_read_input_tokens: u
-                .get("cache_read_input_tokens")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0),
-            cache_creation_input_tokens: u
-                .get("cache_creation_input_tokens")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0),
-        });
+        .map(Usage::from_value);
 
     // content_type from message.content[0] (each JSONL line is one content block)
     let content_type = v
@@ -457,21 +450,184 @@ pub fn parse_session(
         }
     }
 
+    // Second, independent measurement: aggregate the sibling agent-*.jsonl
+    // transcripts (W448). Whole-session regardless of from_turn — a sliced
+    // analysis still reports the full subagent split.
+    let subagent_split = aggregate_subagent_files(path);
+
     let summary = crate::metrics::build_summary(
         summary_acc,
         &subagents,
-        &session_id,
-        &start_time,
-        &end_time,
-        user_turns,
-        from_turn,
+        SessionMeta {
+            session_id: &session_id,
+            start_time: &start_time,
+            end_time: &end_time,
+            user_turns,
+            from_turn,
+        },
+        subagent_split,
     );
+
+    // Relocated-transcript / older-session signal: the queue-op lump saw
+    // subagent activity but the agent-file split found nothing on disk next
+    // to the transcript. Expected (not an error) for sample fixtures and
+    // transcripts analyzed away from their original directory.
+    if summary.subagent_count > 0 && summary.subagent_agent_file_count == 0 {
+        eprintln!("note: subagent files not found next to transcript; split unavailable");
+    }
 
     Ok(ParseResult {
         turns,
         summary,
         subagents,
     })
+}
+
+// ── Subagent-file aggregation (W448) ────────────────────────────────────────
+//
+// Agent transcripts are NOT siblings of the main transcript file — they live
+// in a derived subdirectory:
+//   <dir>/<session-id>.jsonl -> <dir>/<session-id>/subagents/agent-*.jsonl
+//
+// Every assistant line in these files carries isSidechain:true, which is
+// exactly the flag dispatch_value/dispatch_assistant skip. This aggregator
+// therefore reads and classifies agent-file lines directly — it deliberately
+// does NOT call dispatch_value/dispatch_assistant, or every field here would
+// silently compute to zero against real production data.
+
+/// Derive the subagents directory from a transcript path, glob agent-*.jsonl
+/// files (via std::fs::read_dir — no glob crate), and aggregate their token
+/// usage. Missing `.jsonl` suffix, missing/unreadable directory, or a dir with
+/// no matching files all yield an all-zero split — never an error, never a
+/// panic. Callers (older sessions, relocated transcripts, fixtures without a
+/// subagents dir) rely on this.
+pub fn aggregate_subagent_files(transcript_path: &str) -> SubagentSplit {
+    let dir = match transcript_path.strip_suffix(".jsonl") {
+        Some(p) => format!("{p}/subagents"),
+        None => return SubagentSplit::default(),
+    };
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return SubagentSplit::default(),
+    };
+
+    // Filter to agent-*.jsonl (naturally excludes the agent-*.meta.json
+    // companion files, which end in .json not .jsonl). Sort for deterministic
+    // aggregation order.
+    let mut files: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("agent-") && n.ends_with(".jsonl"))
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort();
+
+    let mut total = SubagentSplit::default();
+    for file in &files {
+        if let Some(file_usage) = aggregate_one_agent_file(file) {
+            total.input = total.input.saturating_add(file_usage.input_tokens);
+            total.output = total.output.saturating_add(file_usage.output_tokens);
+            total.cache_read = total
+                .cache_read
+                .saturating_add(file_usage.cache_read_input_tokens);
+            total.cache_write = total
+                .cache_write
+                .saturating_add(file_usage.cache_creation_input_tokens);
+            total.agent_file_count += 1;
+        }
+    }
+    total
+}
+
+/// Stream one agent-*.jsonl file and return its summed usage, or None if it
+/// yielded no usable (usage-bearing) turn. Streams line-by-line — files run
+/// up to ~700KB and there can be 8-24 per session, so this never slurps a
+/// whole file (let alone all files) into memory at once.
+///
+/// The aggregation trap (measured, load-bearing): usage is repeated on every
+/// content-block line sharing a message.id. Naive summation across lines
+/// inflates every field (measured ~4.6x on input). Group by message.id first;
+/// within a group, input/cache are constant across blocks but output_tokens
+/// grows (e.g. 5,5,5,412) — take the max per group rather than strictly the
+/// last line, which gives the same result on well-formed monotonic data and
+/// is strictly safer if a group is ever malformed.
+fn aggregate_one_agent_file(path: &std::path::Path) -> Option<Usage> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = io::BufReader::new(file);
+
+    let mut groups: HashMap<String, Usage> = HashMap::new();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break, // I/O error mid-file — stop, don't spin
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue, // malformed line — skip, not fatal
+        };
+
+        // Deliberately no isSidechain check: every real line here is a
+        // sidechain by definition (that's why it lives in this file).
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+
+        let message_id = match v
+            .get("message")
+            .and_then(|m| m.get("id"))
+            .and_then(|id| id.as_str())
+        {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+
+        let usage = match v.get("message").and_then(|m| m.get("usage")) {
+            Some(u) => Usage::from_value(u),
+            None => continue,
+        };
+
+        groups
+            .entry(message_id)
+            .and_modify(|acc| {
+                acc.output_tokens = acc.output_tokens.max(usage.output_tokens);
+                // input/cache are constant within a group in well-formed data;
+                // re-assigning from the latest line is a no-op there and self-
+                // heals if a line is ever missing them (usage defaults to 0
+                // only when the field itself is absent from that line).
+                acc.input_tokens = usage.input_tokens;
+                acc.cache_read_input_tokens = usage.cache_read_input_tokens;
+                acc.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+            })
+            .or_insert(usage);
+    }
+
+    if groups.is_empty() {
+        return None;
+    }
+
+    let mut total = Usage::default();
+    for usage in groups.values() {
+        total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+        total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+        total.cache_read_input_tokens = total
+            .cache_read_input_tokens
+            .saturating_add(usage.cache_read_input_tokens);
+        total.cache_creation_input_tokens = total
+            .cache_creation_input_tokens
+            .saturating_add(usage.cache_creation_input_tokens);
+    }
+    Some(total)
 }
 
 /// Flush a TurnAccumulator and update SummaryAccumulator.

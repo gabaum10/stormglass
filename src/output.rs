@@ -75,6 +75,25 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
             s.subagent_count
         );
     }
+    // Second, independent measurement (W448): aggregated from agent-*.jsonl
+    // transcripts, not the queue-op lump above. Gated on its own count so it
+    // never renders as a silent parent/child decomposition of the Subagent
+    // line, and never appears as an unlabeled orphan when that line is absent
+    // (the two counts are allowed to diverge — see README).
+    if s.subagent_agent_file_count > 0 {
+        println!("  Subagent (agent files):");
+        println!("    input:       {:>12}", commafy(s.subagent_input_tokens));
+        println!("    output:      {:>12}", commafy(s.subagent_output_tokens));
+        println!(
+            "    cache read:  {:>12}",
+            commafy(s.subagent_cache_read_tokens)
+        );
+        println!(
+            "    cache write: {:>12}",
+            commafy(s.subagent_cache_write_tokens)
+        );
+        println!("    ({} agent transcripts)", s.subagent_agent_file_count);
+    }
 
     println!("\nBurn");
     println!(

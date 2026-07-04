@@ -8,6 +8,47 @@ pub struct Usage {
     pub cache_creation_input_tokens: u64,
 }
 
+impl Usage {
+    /// Parse a `usage` JSON object (the object at `message.usage`, not the
+    /// whole message) into a `Usage`. Missing or non-numeric fields default to
+    /// 0 rather than erroring — usage data is best-effort telemetry, not a
+    /// contract worth panicking over.
+    ///
+    /// Shared by the main-transcript assistant dispatch (parse.rs) and the
+    /// subagent-file aggregator, which is the DRY point named in W448.
+    pub fn from_value(u: &serde_json::Value) -> Usage {
+        Usage {
+            input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            cache_read_input_tokens: u
+                .get("cache_read_input_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            cache_creation_input_tokens: u
+                .get("cache_creation_input_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+        }
+    }
+}
+
+/// Aggregated token split from sibling `<session-id>/subagents/agent-*.jsonl`
+/// files — a second, independently-sourced measurement of subagent cost
+/// distinct from the queue-operation `<subagent_tokens>` lump (which stays in
+/// `SessionSummary::total_subagent_tokens`/`subagent_count` for backward
+/// compatibility). The two do not, and are not expected to, reconcile: the
+/// lump excludes cache tokens entirely and scopes differently (see README).
+#[derive(Debug, Clone, Default)]
+pub struct SubagentSplit {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    /// Count of agent-*.jsonl files that yielded at least one usable
+    /// (usage-bearing, message.id-groupable) turn.
+    pub agent_file_count: u32,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Turn {
     pub turn: u32,
@@ -89,6 +130,22 @@ pub struct SessionSummary {
     pub avg_output_per_turn: f64,
     pub final_context_size: u64,
     pub from_turn: u32, // 1 means full session; >1 means slice starting at that turn
+
+    // ── Agent-file token split (W448) — appended, existing fields untouched ──
+    // Aggregated from <session-id>/subagents/agent-*.jsonl, NOT from the
+    // queue-operation lump above. Authoritative for cost extrapolation
+    // (carries the input/output/cache_read/cache_write split the lump can't);
+    // may legitimately diverge from total_subagent_tokens/subagent_count —
+    // see README "What it measures".
+    pub subagent_input_tokens: u64,
+    pub subagent_output_tokens: u64,
+    pub subagent_cache_read_tokens: u64,
+    pub subagent_cache_write_tokens: u64,
+    pub subagent_agent_file_count: u32,
+    /// Auditable sum: input + output + cache_read + cache_write. NOT
+    /// comparable to total_subagent_tokens (different source, different
+    /// scope — see README).
+    pub subagent_usage_total_tokens: u64,
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp to milliseconds since epoch.
@@ -181,16 +238,30 @@ pub fn flush_turn(
     }
 }
 
+/// Session-level metadata that isn't part of the turn accumulator — bundled
+/// into one struct so build_summary doesn't grow an unbounded positional
+/// parameter list every time a new session-scoped value is threaded through.
+pub struct SessionMeta<'a> {
+    pub session_id: &'a str,
+    pub start_time: &'a str,
+    pub end_time: &'a str,
+    pub user_turns: u32,
+    pub from_turn: u32,
+}
+
 /// Build a SessionSummary from accumulated state.
 pub fn build_summary(
     acc: SummaryAccumulator,
     subagents: &[SubagentRecord],
-    session_id: &str,
-    start_time: &str,
-    end_time: &str,
-    user_turns: u32,
-    from_turn: u32,
+    meta: SessionMeta,
+    subagent_split: SubagentSplit,
 ) -> SessionSummary {
+    let session_id = meta.session_id;
+    let start_time = meta.start_time;
+    let end_time = meta.end_time;
+    let user_turns = meta.user_turns;
+    let from_turn = meta.from_turn;
+
     let total_turns = acc.total_turns;
 
     let thinking_ratio = if total_turns == 0 {
@@ -280,5 +351,15 @@ pub fn build_summary(
         avg_output_per_turn,
         final_context_size: acc.final_context_size,
         from_turn: from_turn.max(1),
+        subagent_input_tokens: subagent_split.input,
+        subagent_output_tokens: subagent_split.output,
+        subagent_cache_read_tokens: subagent_split.cache_read,
+        subagent_cache_write_tokens: subagent_split.cache_write,
+        subagent_agent_file_count: subagent_split.agent_file_count,
+        subagent_usage_total_tokens: subagent_split
+            .input
+            .saturating_add(subagent_split.output)
+            .saturating_add(subagent_split.cache_read)
+            .saturating_add(subagent_split.cache_write),
     }
 }
