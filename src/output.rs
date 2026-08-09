@@ -37,7 +37,7 @@ pub fn print_human(s: &SessionSummary, turns: &[Turn]) {
     } else {
         String::new()
     };
-    println!("stormglass / Session: {} ({}){}", &sid, s.model, slice_note);
+    println!("stormglass / Session: {} ({}){}", sid, s.model, slice_note);
     if s.models_seen.len() > 1 {
         // Recompute per-model counts from the turns slice (not stored in SessionSummary)
         let mut model_counts: std::collections::HashMap<&str, u32> =
