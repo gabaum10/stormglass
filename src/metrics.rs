@@ -49,6 +49,38 @@ pub struct SubagentSplit {
     pub agent_file_count: u32,
 }
 
+/// One per-dispatch record: the per-file totals that `aggregate_subagent_files`
+/// used to already sum into `SubagentSplit` and then drop. Retained here so a
+/// caller can see cost per dispatch, not just the session-wide sum (W550).
+///
+/// Token counts come from `aggregate_one_agent_file` (the group-by-message.id,
+/// max-per-group dedup) — same source, same correctness guarantee as
+/// `SubagentSplit`'s totals, just not thrown away after summation.
+///
+/// Label fields come from the sibling `agent-<id>.meta.json`, which is
+/// optional and best-effort: a missing or unparseable meta file yields a
+/// record with all four label fields None, never a dropped record — the
+/// token counts are real either way. `tool_use_id` is the join key back to
+/// the parent transcript's Task tool_use block.
+///
+/// `model` deliberately does NOT come from meta.json — model drifts across
+/// harness versions and isn't reliably present there. It's read from
+/// `message.model` in the agent transcript itself, or left None.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AgentDispatch {
+    /// Derived from the filename: `agent-<agent_id>.jsonl`.
+    pub agent_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub agent_type: Option<String>,
+    pub description: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub spawn_depth: Option<u32>,
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Turn {
     pub turn: u32,
@@ -146,6 +178,12 @@ pub struct SessionSummary {
     /// comparable to total_subagent_tokens (different source, different
     /// scope — see README).
     pub subagent_usage_total_tokens: u64,
+    /// Per-dispatch records (W550) — the per-file totals that fed the
+    /// subagent_* sums above, retained individually instead of dropped after
+    /// summation. Same source/scope caveats as the subagent_* fields apply
+    /// per-record. Empty when no agent-*.jsonl files were found (mirrors
+    /// subagent_agent_file_count == 0).
+    pub subagent_dispatches: Vec<AgentDispatch>,
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp to milliseconds since epoch.
@@ -255,6 +293,7 @@ pub fn build_summary(
     subagents: &[SubagentRecord],
     meta: SessionMeta,
     subagent_split: SubagentSplit,
+    subagent_dispatches: Vec<AgentDispatch>,
 ) -> SessionSummary {
     let session_id = meta.session_id;
     let start_time = meta.start_time;
@@ -361,5 +400,6 @@ pub fn build_summary(
             .saturating_add(subagent_split.output)
             .saturating_add(subagent_split.cache_read)
             .saturating_add(subagent_split.cache_write),
+        subagent_dispatches,
     }
 }

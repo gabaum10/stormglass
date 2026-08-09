@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::io::{self, BufRead};
 
 use crate::metrics::{
-    flush_turn, parse_ts_ms, SessionMeta, SubagentRecord, SubagentSplit, SummaryAccumulator, Turn,
-    Usage,
+    flush_turn, parse_ts_ms, AgentDispatch, SessionMeta, SubagentRecord, SubagentSplit,
+    SummaryAccumulator, Turn, Usage,
 };
 
 // ── Entry types ──────────────────────────────────────────────────────────────
@@ -453,7 +453,7 @@ pub fn parse_session(
     // Second, independent measurement: aggregate the sibling agent-*.jsonl
     // transcripts (W448). Whole-session regardless of from_turn — a sliced
     // analysis still reports the full subagent split.
-    let subagent_split = aggregate_subagent_files(path);
+    let (subagent_split, subagent_dispatches) = aggregate_subagent_files(path);
 
     let summary = crate::metrics::build_summary(
         summary_acc,
@@ -466,6 +466,7 @@ pub fn parse_session(
             from_turn,
         },
         subagent_split,
+        subagent_dispatches,
     );
 
     // Relocated-transcript / older-session signal: the queue-op lump saw
@@ -498,18 +499,22 @@ pub fn parse_session(
 /// Derive the subagents directory from a transcript path, glob agent-*.jsonl
 /// files (via std::fs::read_dir — no glob crate), and aggregate their token
 /// usage. Missing `.jsonl` suffix, missing/unreadable directory, or a dir with
-/// no matching files all yield an all-zero split — never an error, never a
-/// panic. Callers (older sessions, relocated transcripts, fixtures without a
-/// subagents dir) rely on this.
-pub fn aggregate_subagent_files(transcript_path: &str) -> SubagentSplit {
+/// no matching files all yield an all-zero split (and empty dispatch list) —
+/// never an error, never a panic. Callers (older sessions, relocated
+/// transcripts, fixtures without a subagents dir) rely on this.
+///
+/// Returns the session-wide total (byte-identical to the pre-W550 behavior)
+/// alongside the per-file records that fed it — see `AgentDispatch` doc for
+/// why those are worth keeping instead of discarding after summation.
+pub fn aggregate_subagent_files(transcript_path: &str) -> (SubagentSplit, Vec<AgentDispatch>) {
     let dir = match transcript_path.strip_suffix(".jsonl") {
         Some(p) => format!("{p}/subagents"),
-        None => return SubagentSplit::default(),
+        None => return (SubagentSplit::default(), Vec::new()),
     };
 
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
-        Err(_) => return SubagentSplit::default(),
+        Err(_) => return (SubagentSplit::default(), Vec::new()),
     };
 
     // Filter to agent-*.jsonl (naturally excludes the agent-*.meta.json
@@ -528,20 +533,84 @@ pub fn aggregate_subagent_files(transcript_path: &str) -> SubagentSplit {
     files.sort();
 
     let mut total = SubagentSplit::default();
+    let mut dispatches: Vec<AgentDispatch> = Vec::new();
     for file in &files {
         if let Some(file_usage) = aggregate_one_agent_file(file) {
-            total.input = total.input.saturating_add(file_usage.input_tokens);
-            total.output = total.output.saturating_add(file_usage.output_tokens);
+            total.input = total.input.saturating_add(file_usage.usage.input_tokens);
+            total.output = total.output.saturating_add(file_usage.usage.output_tokens);
             total.cache_read = total
                 .cache_read
-                .saturating_add(file_usage.cache_read_input_tokens);
+                .saturating_add(file_usage.usage.cache_read_input_tokens);
             total.cache_write = total
                 .cache_write
-                .saturating_add(file_usage.cache_creation_input_tokens);
+                .saturating_add(file_usage.usage.cache_creation_input_tokens);
             total.agent_file_count += 1;
+
+            let agent_id = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix("agent-"))
+                .and_then(|n| n.strip_suffix(".jsonl"))
+                .unwrap_or_default()
+                .to_owned();
+            let meta = read_agent_meta(file);
+
+            dispatches.push(AgentDispatch {
+                agent_id,
+                input_tokens: file_usage.usage.input_tokens,
+                output_tokens: file_usage.usage.output_tokens,
+                cache_read_tokens: file_usage.usage.cache_read_input_tokens,
+                cache_write_tokens: file_usage.usage.cache_creation_input_tokens,
+                agent_type: meta.agent_type,
+                description: meta.description,
+                tool_use_id: meta.tool_use_id,
+                spawn_depth: meta.spawn_depth,
+                model: file_usage.model,
+            });
         }
     }
-    total
+    (total, dispatches)
+}
+
+/// Label fields from the sibling `agent-<id>.meta.json`. Every field is
+/// optional and independently so — a real meta.json may carry any subset of
+/// these (observed: older files carry only `agentType`/`spawnDepth`, newer
+/// ones add `description`/`toolUseId`, `model` is inconsistent across harness
+/// versions so it is deliberately NOT read from here at all — see
+/// AgentDispatch doc comment). `#[serde(default)]` on each field means a
+/// meta.json missing a key yields None for it rather than a parse error.
+#[derive(Debug, Default, serde::Deserialize)]
+struct AgentMetaFile {
+    #[serde(rename = "agentType", default)]
+    agent_type: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(rename = "toolUseId", default)]
+    tool_use_id: Option<String>,
+    #[serde(rename = "spawnDepth", default)]
+    spawn_depth: Option<u32>,
+}
+
+/// Read and parse the `.meta.json` sidecar for an `agent-<id>.jsonl` file.
+/// Missing file, unreadable file, or malformed JSON all yield an all-None
+/// default — a record with NULL labels, never a dropped record (the token
+/// counts already came from the transcript itself, independent of this).
+fn read_agent_meta(agent_jsonl_path: &std::path::Path) -> AgentMetaFile {
+    let meta_path = agent_jsonl_path.with_extension("meta.json");
+    let Ok(contents) = std::fs::read_to_string(&meta_path) else {
+        return AgentMetaFile::default();
+    };
+    serde_json::from_str(&contents).unwrap_or_default()
+}
+
+/// Return of `aggregate_one_agent_file`: the deduped usage total (unchanged
+/// logic) plus the model seen on the file's lines, best-effort (W550). Model
+/// is not part of the dedup — it's read straight off whichever line happens
+/// to carry it, last-write-wins, since a single agent file is expected to
+/// stay on one model for its whole run.
+struct AgentFileUsage {
+    usage: Usage,
+    model: Option<String>,
 }
 
 /// Stream one agent-*.jsonl file and return its summed usage, or None if it
@@ -556,11 +625,12 @@ pub fn aggregate_subagent_files(transcript_path: &str) -> SubagentSplit {
 /// grows (e.g. 5,5,5,412) — take the max per group rather than strictly the
 /// last line, which gives the same result on well-formed monotonic data and
 /// is strictly safer if a group is ever malformed.
-fn aggregate_one_agent_file(path: &std::path::Path) -> Option<Usage> {
+fn aggregate_one_agent_file(path: &std::path::Path) -> Option<AgentFileUsage> {
     let file = std::fs::File::open(path).ok()?;
     let reader = io::BufReader::new(file);
 
     let mut groups: HashMap<String, Usage> = HashMap::new();
+    let mut model: Option<String> = None;
 
     for line in reader.lines() {
         let line = match line {
@@ -597,6 +667,14 @@ fn aggregate_one_agent_file(path: &std::path::Path) -> Option<Usage> {
             None => continue,
         };
 
+        if let Some(m) = v
+            .get("message")
+            .and_then(|m| m.get("model"))
+            .and_then(|m| m.as_str())
+        {
+            model = Some(m.to_owned());
+        }
+
         groups
             .entry(message_id)
             .and_modify(|acc| {
@@ -632,7 +710,10 @@ fn aggregate_one_agent_file(path: &std::path::Path) -> Option<Usage> {
             .cache_creation_input_tokens
             .saturating_add(usage.cache_creation_input_tokens);
     }
-    Some(total)
+    Some(AgentFileUsage {
+        usage: total,
+        model,
+    })
 }
 
 /// Flush a TurnAccumulator and update SummaryAccumulator.
