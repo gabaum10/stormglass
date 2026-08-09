@@ -756,3 +756,141 @@ fn test_subagent_split_human_output_absent_without_agent_files() {
         stdout
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W550 — per-dispatch records (subagent_dispatches) ride the --json surface
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Before W550, aggregate_subagent_files() summed each agent-*.jsonl file's
+// deduped usage into a session-wide SubagentSplit and threw the per-file
+// value away — only the sum reached SessionSummary. These tests prove the
+// per-file records now survive, ride the --json output as
+// "subagent_dispatches", and that the pre-existing session-wide sum fields
+// (subagent_input_tokens etc.) are unaffected by carrying the new records
+// alongside them.
+//
+// Fixture: tests/fixtures/w550_dispatch_labels.jsonl (main transcript, 1 turn) +
+//          tests/fixtures/w550_dispatch_labels/subagents/agent-labeled.jsonl
+//              (input=6000 output=700 cache_read=2000 cache_write=300,
+//               model claude-sonnet-5)
+//          tests/fixtures/w550_dispatch_labels/subagents/agent-labeled.meta.json
+//              ({"agentType":"kade","description":"Build W550 feature",
+//                "toolUseId":"toolu_ABC123","spawnDepth":1})
+//          tests/fixtures/w550_dispatch_labels/subagents/agent-nolabel.jsonl
+//              (input=900 output=80 cache_read=100 cache_write=0,
+//               model claude-haiku-4, NO sidecar .meta.json)
+//
+// Sums (session-wide, must match pre-existing fields regardless of the new
+// per-record array):
+//   subagent_input_tokens       = 6000 + 900 = 6900
+//   subagent_output_tokens      =  700 +  80 =  780
+//   subagent_cache_read_tokens  = 2000 + 100 = 2100
+//   subagent_cache_write_tokens =  300 +   0 =  300
+//   subagent_agent_file_count   = 2
+// ══════════════════════════════════════════════════════════════════════════════
+
+fn w550_dispatch_labels_fixture_path() -> String {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    format!("{}/tests/fixtures/w550_dispatch_labels.jsonl", manifest)
+}
+
+fn parse_w550_dispatch_labels_json() -> serde_json::Value {
+    let path = w550_dispatch_labels_fixture_path();
+    let (code, stdout, stderr) = run_stormglass(&["analyze", &path, "--json"]);
+    assert_eq!(
+        code, 0,
+        "stormglass exited with code {} — stderr: {}",
+        code, stderr
+    );
+    serde_json::from_str(&stdout).expect("stdout was not valid JSON")
+}
+
+#[test]
+fn test_subagent_dispatches_records_survive_per_file() {
+    // The primary regression: before W550 there was no "subagent_dispatches"
+    // key at all (the per-file values were computed then discarded), so
+    // .as_array() below would be None and this test would fail/panic at the
+    // pre-fix SHA.
+    let summary = parse_w550_dispatch_labels_json();
+    let dispatches = summary["subagent_dispatches"]
+        .as_array()
+        .expect("subagent_dispatches must be a JSON array");
+    assert_eq!(
+        dispatches.len(),
+        2,
+        "must carry one record per agent-*.jsonl file (2 in this fixture), not just the sum"
+    );
+
+    // Deterministic order: files.sort() on the path, "agent-labeled.jsonl" <
+    // "agent-nolabel.jsonl".
+    let labeled = &dispatches[0];
+    assert_eq!(labeled["agent_id"], "labeled");
+    assert_eq!(labeled["input_tokens"].as_u64().unwrap(), 6000);
+    assert_eq!(labeled["output_tokens"].as_u64().unwrap(), 700);
+    assert_eq!(labeled["cache_read_tokens"].as_u64().unwrap(), 2000);
+    assert_eq!(labeled["cache_write_tokens"].as_u64().unwrap(), 300);
+
+    let nolabel = &dispatches[1];
+    assert_eq!(nolabel["agent_id"], "nolabel");
+    assert_eq!(nolabel["input_tokens"].as_u64().unwrap(), 900);
+    assert_eq!(nolabel["output_tokens"].as_u64().unwrap(), 80);
+    assert_eq!(nolabel["cache_read_tokens"].as_u64().unwrap(), 100);
+    assert_eq!(nolabel["cache_write_tokens"].as_u64().unwrap(), 0);
+}
+
+#[test]
+fn test_subagent_dispatches_labels_from_meta_json() {
+    let summary = parse_w550_dispatch_labels_json();
+    let dispatches = summary["subagent_dispatches"].as_array().unwrap();
+    let labeled = &dispatches[0];
+    assert_eq!(labeled["agent_type"], "kade");
+    assert_eq!(labeled["description"], "Build W550 feature");
+    assert_eq!(labeled["tool_use_id"], "toolu_ABC123");
+    assert_eq!(labeled["spawn_depth"].as_u64().unwrap(), 1);
+}
+
+#[test]
+fn test_subagent_dispatches_missing_meta_yields_null_labels_not_a_dropped_record() {
+    // agent-nolabel.jsonl has no sidecar .meta.json on disk. Per the W550
+    // dispatch: this must still produce a record (proven above — the record
+    // is present at index 1), with all four label fields JSON null rather
+    // than the record being dropped or the run erroring.
+    let summary = parse_w550_dispatch_labels_json();
+    let dispatches = summary["subagent_dispatches"].as_array().unwrap();
+    let nolabel = &dispatches[1];
+    assert!(nolabel["agent_type"].is_null());
+    assert!(nolabel["description"].is_null());
+    assert!(nolabel["tool_use_id"].is_null());
+    assert!(nolabel["spawn_depth"].is_null());
+}
+
+#[test]
+fn test_subagent_dispatches_model_read_from_transcript_not_meta() {
+    // Neither fixture's .meta.json (nolabel has none at all; labeled's
+    // carries no "model" key) supplies model. Both dispatch records must
+    // still carry the model because it's read from message.model in the
+    // agent-*.jsonl transcript itself (W550 point #4), not from meta.
+    let summary = parse_w550_dispatch_labels_json();
+    let dispatches = summary["subagent_dispatches"].as_array().unwrap();
+    assert_eq!(dispatches[0]["model"], "claude-sonnet-5");
+    assert_eq!(dispatches[1]["model"], "claude-haiku-4");
+}
+
+#[test]
+fn test_subagent_dispatches_session_sum_unchanged_alongside_per_file_records() {
+    // The existing session-wide sum fields must be byte-identical to summing
+    // the per-file values by hand — carrying the new array must not perturb
+    // the pre-existing total computation.
+    let summary = parse_w550_dispatch_labels_json();
+    assert_eq!(summary["subagent_input_tokens"].as_u64().unwrap(), 6_900);
+    assert_eq!(summary["subagent_output_tokens"].as_u64().unwrap(), 780);
+    assert_eq!(
+        summary["subagent_cache_read_tokens"].as_u64().unwrap(),
+        2_100
+    );
+    assert_eq!(
+        summary["subagent_cache_write_tokens"].as_u64().unwrap(),
+        300
+    );
+    assert_eq!(summary["subagent_agent_file_count"].as_u64().unwrap(), 2);
+}

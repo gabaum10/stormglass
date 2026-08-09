@@ -1,0 +1,1 @@
+{"type":"assistant","sessionId":"sess-w550dl0001-0000-0000-0000-000000000001","timestamp":"2026-08-01T09:00:11.000Z","isSidechain":true,"message":{"id":"lmsg1","model":"claude-sonnet-5","stop_reason":"end_turn","usage":{"input_tokens":6000,"output_tokens":700,"cache_read_input_tokens":2000,"cache_creation_input_tokens":300},"content":[{"type":"text"}]}}
