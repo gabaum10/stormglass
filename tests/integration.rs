@@ -894,3 +894,123 @@ fn test_subagent_dispatches_session_sum_unchanged_alongside_per_file_records() {
     );
     assert_eq!(summary["subagent_agent_file_count"].as_u64().unwrap(), 2);
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W550 fix round 1, BLOCK A — `model` last-line-wins is wrong twice.
+//
+// aggregate_one_agent_file() tracked `model` as a bare last-line-wins
+// variable across the whole file, with no defense against two failure modes
+// found independently by Lens (binary diff, 60 sessions) and Wren (key-by-key
+// reconciliation, 84 sessions):
+//
+//   1. Claude Code writes "model":"<synthetic>" on error lines. Those lines
+//      still carry message.id + message.usage (zero usage), so they pass
+//      every gate and can win last-line-wins, labeling a real dispatch with
+//      a model that does not exist. 30 of 4,065 real agent files hit this.
+//   2. A single agent-*.jsonl file is not guaranteed to stay on one real
+//      model — 9 real files carried two genuinely different real models
+//      (33.4M tokens; this house's own W539 substrate swap mid-session is
+//      an instance of this, not a hypothetical). Last-line-wins silently
+//      attributes 100% of the file's tokens to whichever model's line
+//      happened to be physically last.
+//
+// Fixture: tests/fixtures/w550_block_a.jsonl (main transcript, 1 turn) +
+//          tests/fixtures/w550_block_a/subagents/
+//              agent-badmeta.jsonl + agent-badmeta.meta.json (malformed
+//                  JSON sidecar — coverage gap, see below)
+//              agent-mixed.jsonl (two message.id groups, two different REAL
+//                  models: claude-opus-4-8 then claude-sonnet-5, both with
+//                  nonzero usage)
+//              agent-synth.jsonl (one real-model group with usage, followed
+//                  by a "<synthetic>" error-line group with all-zero usage)
+//
+// Files sort agent-badmeta < agent-mixed < agent-synth, so dispatches[0] is
+// badmeta, [1] is mixed, [2] is synth.
+//
+// At dce26819c1de9a38b1ed24cf29f189a58ad0e32a (pre-fix): both
+// test_subagent_dispatches_synthetic_model_never_emitted and
+// test_subagent_dispatches_mixed_real_models_do_not_silently_pick_one fail —
+// the former because dispatches[2]["model"] == "<synthetic>" (the sentinel
+// wins last-line-wins over the earlier real model), the latter because
+// dispatches[1]["model"] == "claude-sonnet-5" (a confident, silently wrong
+// single answer discarding the opus-labeled tokens in the same file).
+// ══════════════════════════════════════════════════════════════════════════════
+
+fn w550_block_a_fixture_path() -> String {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    format!("{}/tests/fixtures/w550_block_a.jsonl", manifest)
+}
+
+fn parse_w550_block_a_json() -> serde_json::Value {
+    let path = w550_block_a_fixture_path();
+    let (code, stdout, stderr) = run_stormglass(&["analyze", &path, "--json"]);
+    assert_eq!(
+        code, 0,
+        "stormglass exited with code {} — stderr: {}",
+        code, stderr
+    );
+    serde_json::from_str(&stdout).expect("stdout was not valid JSON")
+}
+
+#[test]
+fn test_subagent_dispatches_synthetic_model_never_emitted() {
+    let summary = parse_w550_block_a_json();
+    let dispatches = summary["subagent_dispatches"].as_array().unwrap();
+    let synth = &dispatches[2];
+    assert_eq!(synth["agent_id"], "synth");
+    // "<synthetic>" appears later in the file than the real model line, so
+    // pre-fix last-line-wins reports it as the model. It must never surface
+    // on a published field — the file's one real model (claude-sonnet-5,
+    // read off the earlier, non-sentinel line) is the honest answer here,
+    // since there's exactly one real model and only the sentinel to discard.
+    assert_ne!(
+        synth["model"], "<synthetic>",
+        "a non-model sentinel must never be emitted as the model label"
+    );
+    assert_eq!(synth["model"], "claude-sonnet-5");
+    // Token totals for this file must be unaffected by the label fix — the
+    // synthetic line's usage is all zero, same as pre-fix.
+    assert_eq!(synth["input_tokens"].as_u64().unwrap(), 500);
+    assert_eq!(synth["output_tokens"].as_u64().unwrap(), 50);
+}
+
+#[test]
+fn test_subagent_dispatches_mixed_real_models_do_not_silently_pick_one() {
+    let summary = parse_w550_block_a_json();
+    let dispatches = summary["subagent_dispatches"].as_array().unwrap();
+    let mixed = &dispatches[1];
+    assert_eq!(mixed["agent_id"], "mixed");
+    // Two genuinely different real models appear in this file. Reporting
+    // either one is a confident wrong answer for the tokens attributed to
+    // the other model's group; null is the only honest label here.
+    assert!(
+        mixed["model"].is_null(),
+        "a file with two distinct real models must not report a single \
+         model — got {:?}",
+        mixed["model"]
+    );
+    // The token totals (both models' usage summed) must be unaffected by
+    // the label fix — model attribution is orthogonal to the dedup.
+    assert_eq!(mixed["input_tokens"].as_u64().unwrap(), 1_000);
+    assert_eq!(mixed["output_tokens"].as_u64().unwrap(), 100);
+}
+
+#[test]
+fn test_subagent_dispatches_malformed_meta_json_yields_null_labels_not_a_dropped_record() {
+    // Coverage gap noted alongside BLOCK A: only the *absent* sidecar case
+    // was tested before this round. agent-badmeta.meta.json exists but is
+    // truncated/invalid JSON — read_agent_meta()'s
+    // `serde_json::from_str(&contents).unwrap_or_default()` is the only
+    // thing standing between this and a dropped record. Pin it.
+    let summary = parse_w550_block_a_json();
+    let dispatches = summary["subagent_dispatches"].as_array().unwrap();
+    let badmeta = &dispatches[0];
+    assert_eq!(badmeta["agent_id"], "badmeta");
+    assert!(badmeta["agent_type"].is_null());
+    assert!(badmeta["description"].is_null());
+    assert!(badmeta["tool_use_id"].is_null());
+    assert!(badmeta["spawn_depth"].is_null());
+    // Token counts come from the transcript, not the sidecar — unaffected.
+    assert_eq!(badmeta["input_tokens"].as_u64().unwrap(), 150);
+    assert_eq!(badmeta["output_tokens"].as_u64().unwrap(), 20);
+}
