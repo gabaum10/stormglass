@@ -573,12 +573,19 @@ pub fn aggregate_subagent_files(transcript_path: &str) -> (SubagentSplit, Vec<Ag
 }
 
 /// Label fields from the sibling `agent-<id>.meta.json`. Every field is
-/// optional and independently so — a real meta.json may carry any subset of
-/// these (observed: older files carry only `agentType`/`spawnDepth`, newer
-/// ones add `description`/`toolUseId`, `model` is inconsistent across harness
+/// optional — a real meta.json may carry any subset of these (observed:
+/// older files carry only `agentType`/`spawnDepth`, newer ones add
+/// `description`/`toolUseId`, `model` is inconsistent across harness
 /// versions so it is deliberately NOT read from here at all — see
 /// AgentDispatch doc comment). `#[serde(default)]` on each field means a
-/// meta.json missing a key yields None for it rather than a parse error.
+/// meta.json *missing* a key yields None for just that field rather than a
+/// parse error. That independence does NOT extend to a *wrong-typed* key,
+/// though: `serde_json::from_str` deserializes this struct as one unit, so
+/// one field with the wrong JSON type (e.g. `"spawnDepth":"deep"` instead of
+/// a number) fails the whole parse and `read_agent_meta` falls back to
+/// all-None for all four fields, not just the offending one. Zero live
+/// incidence observed (0 of 6,458 real sidecars hit this), so this is
+/// documented as a known sharp edge rather than special-cased in code.
 #[derive(Debug, Default, serde::Deserialize)]
 struct AgentMetaFile {
     #[serde(rename = "agentType", default)]
@@ -604,13 +611,37 @@ fn read_agent_meta(agent_jsonl_path: &std::path::Path) -> AgentMetaFile {
 }
 
 /// Return of `aggregate_one_agent_file`: the deduped usage total (unchanged
-/// logic) plus the model seen on the file's lines, best-effort (W550). Model
-/// is not part of the dedup — it's read straight off whichever line happens
-/// to carry it, last-write-wins, since a single agent file is expected to
-/// stay on one model for its whole run.
+/// logic) plus the model attributed to the file's lines, best-effort
+/// (W550). Model is not part of the dedup — it's read off `message.model`
+/// across the file's lines — but is deliberately NOT simple last-line-wins
+/// (fix round 1, both found independently by Lens and Wren):
+///
+/// - `"<synthetic>"` (Claude Code's sentinel for error lines) still carries
+///   `message.id` + `message.usage`, so it passes every gate here and would
+///   win last-line-wins if treated as a model. It is filtered before
+///   consideration and never surfaces as `model` — see
+///   `is_model_sentinel`.
+/// - A single agent file is NOT guaranteed to stay on one real model — 9 of
+///   4,065 real files carried two genuinely different real models (this
+///   house's own W539 substrate swap mid-session is an instance, not a
+///   hypothetical edge case). Reporting either one is a confident wrong
+///   answer for the tokens the *other* model actually produced, so a file
+///   that shows more than one distinct real model reports `None` rather
+///   than picking a side. `None` is the honest label on this field —
+///   there's nothing downstream that would catch a plausible wrong name.
 struct AgentFileUsage {
     usage: Usage,
     model: Option<String>,
+}
+
+/// Is this a non-model sentinel value rather than a real model name?
+/// Claude Code writes `"model":"<synthetic>"` on error lines (no live
+/// example of any other bracketed sentinel has been observed, but the
+/// `<...>` wrapper is the harness's own convention for "not a real model
+/// name," so it's treated as the general shape rather than hardcoding the
+/// one literal).
+fn is_model_sentinel(m: &str) -> bool {
+    m.starts_with('<') && m.ends_with('>')
 }
 
 /// Stream one agent-*.jsonl file and return its summed usage, or None if it
@@ -631,6 +662,7 @@ fn aggregate_one_agent_file(path: &std::path::Path) -> Option<AgentFileUsage> {
 
     let mut groups: HashMap<String, Usage> = HashMap::new();
     let mut model: Option<String> = None;
+    let mut model_mixed = false;
 
     for line in reader.lines() {
         let line = match line {
@@ -672,7 +704,13 @@ fn aggregate_one_agent_file(path: &std::path::Path) -> Option<AgentFileUsage> {
             .and_then(|m| m.get("model"))
             .and_then(|m| m.as_str())
         {
-            model = Some(m.to_owned());
+            if !is_model_sentinel(m) {
+                match &model {
+                    None => model = Some(m.to_owned()),
+                    Some(existing) if existing != m => model_mixed = true,
+                    _ => {} // same model seen again — no-op
+                }
+            }
         }
 
         groups
@@ -710,6 +748,10 @@ fn aggregate_one_agent_file(path: &std::path::Path) -> Option<AgentFileUsage> {
             .cache_creation_input_tokens
             .saturating_add(usage.cache_creation_input_tokens);
     }
+    // A file that showed more than one distinct real model reports None
+    // rather than whichever one happened to be seen last — see the
+    // AgentFileUsage doc comment.
+    let model = if model_mixed { None } else { model };
     Some(AgentFileUsage {
         usage: total,
         model,
