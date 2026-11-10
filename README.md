@@ -1,3 +1,5 @@
+Frozen at 0bdc43da; no longer maintained here.
+
 # stormglass
 
 Read the crystals the storm left behind.
